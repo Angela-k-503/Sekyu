@@ -1,0 +1,29 @@
+/* Minimalist Underline Inputs */
+.form-floating .form-control {
+  border-top: none;
+  border-left: none;
+  border-right: none;
+  border-bottom: 2px solid #dee2e6; /* Standard Bootstrap border color */
+  border-radius: 0;                  /* Removes corner rounding completely */
+  background-color: transparent;     /* Prevents white/gray block backgrounds */
+  padding-left: 0;                   /* Aligns text perfectly with the underline edge */
+  padding-right: 0;
+}
+
+/* Change the underline color when active/focused */
+.form-floating .form-control:focus {
+  border-bottom-color: #0d6efd;      /* Bootstrap Primary Blue */
+  box-shadow: none;                  /* Removes the default glowing blue ring */
+  background-color: transparent;
+}
+
+/* Shift the label left to align perfectly with the borderless edge */
+.form-floating label {
+  padding-left: 0;
+}
+
+/* Target the span container AND any svg component inside it directly */
+.input-group .input-group-text {
+  border: none;
+  background-color: transparent;
+}

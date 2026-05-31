@@ -1,0 +1,22 @@
+# Ignore Python junk
+__pycache__/
+.venv/
+flask_session/
+
+# Ignore Database
+database.db
+
+# Ignore Environment variables (Crucial for security!)
+.env
+
+# Ignore Node.js stuff
+node_modules/
+package-lock.json
+package.json
+
+# Ignore temporary files/tools you aren't using
+main.py
+mock.html
+test.html
+test.js
+test1.js

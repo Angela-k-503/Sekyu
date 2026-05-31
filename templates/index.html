@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="initial-scale=1, width=device-width">
+
+        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-sRIl4kxILFvY47J16cr9ZwB07vP4J8+LH7qKQnuqkuIAvNWLzeN8tE5YBujZqJLB" crossorigin="anonymous">
+        <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/js/bootstrap.bundle.min.js" integrity="sha384-FKyoEForCGlyvwx9Hj09JcYn3nv7wiPVlz7YYwJrWVcXK/BmnVDxM+D2scQbITxI" crossorigin="anonymous"></script>
+
+        <link href="{{ url_for('static', filename='styles.css') }}" rel="stylesheet">
+        <title>V2 Pass Vault</title>
+    </head>
+    <body>
+            <section id="authSection" class="d-flex min-vh-100 align-items-center justify-content-center {% if authenticated %}d-none{% endif %}">
+                <div class="card shadow border-0 overflow-hidden rounded-4" style="width: 600px; min-height: 420px; display: flex; flex-direction: column; justify-content: space-between;">
+                    <div class="nav d-flex border-bottom" role="tablist">
+                        <button type="button" class="nav-link btn btn-primary active w-50 py-3 rounded-0 fw-bold border-0" id="login-tab" 
+                            data-bs-toggle="tab" data-bs-target="#tabBtnLogin" role="tab" aria-controls="tabBtnLogin" 
+                            aria-selected="true">Sign In</button>
+                        <button type="button" class="nav-link btn btn-primary w-50 py-3 rounded-0 fw-bold border-0" id="register-tab" 
+                            data-bs-toggle="tab" data-bs-target="#tabBtnRegister" role="tab" aria-controls="tabBtnRegister" 
+                            aria-selected="false">Register</button>
+                    </div>
+
+                    <div class="tab-content">
+                        <div class="tab-pane fade show active p-4 bg-white" id="tabBtnLogin" role="tabpanel" aria-labelledby="login-tab">
+                            <div id="loginPanel">
+                                <div class="mb-4">
+                                    <h4 class="fs-2">Welcome Back!</h4>
+                                    <p>Unlock your vault</p>
+                                </div>
+                                <form id="loginForm">
+                                    <div class="input-group mb-3">
+                                        <span class="input-group-text">
+                                            <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" fill="currentColor" class="bi bi-person" viewBox="0 0 16 16">
+                                                <path d="M8 8a3 3 0 1 0 0-6 3 3 0 0 0 0 6m2-3a2 2 0 1 1-4 0 2 2 0 0 1 4 0m4 8c0 1-1 1-1 1H3s-1 0-1-1 1-4 6-4 6 3 6 4m-1-.004c-.001-.246-.154-.986-.832-1.664C11.516 10.68 10.289 10 8 10s-3.516.68-4.168 1.332c-.678.678-.83 1.418-.832 1.664z"/>
+                                            </svg>
+                                        </span>
+                                        <div class="form-floating">
+                                            <input autocomplete="off" type="text" class="form-control" id="loginUsername" placeholder="" required>
+                                            <label for="loginUsername">Username</label>
+                                        </div>
+                                    </div>
+                                    <div class="input-group mb-5">
+                                        <span class="input-group-text">
+                                            <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" fill="currentColor" class="bi bi-lock" viewBox="0 0 16 16">
+                                                <path fill-rule="evenodd" d="M8 0a4 4 0 0 1 4 4v2.05a2.5 2.5 0 0 1 2 2.45v5a2.5 2.5 0 0 1-2.5 2.5h-7A2.5 2.5 0 0 1 2 13.5v-5a2.5 2.5 0 0 1 2-2.45V4a4 4 0 0 1 4-4M4.5 7A1.5 1.5 0 0 0 3 8.5v5A1.5 1.5 0 0 0 4.5 15h7a1.5 1.5 0 0 0 1.5-1.5v-5A1.5 1.5 0 0 0 11.5 7zM8 1a3 3 0 0 0-3 3v2h6V4a3 3 0 0 0-3-3"/>
+                                            </svg>
+                                        </span>
+                                        <div class="form-floating">
+                                            <input type="password" class="form-control" id="loginPassword" placeholder="" required>
+                                            <label for="loginPassword">Password</label>
+                                        </div>
+                                    </div>
+                                    <button id="loginBtn" class="btn btn-secondary w-100 rounded-5 mb-2" data-url="{{ url_for('auth.sessions') }}">Submit</button>
+                                </form>
+                            </div>
+                        </div>
+                    
+                        <div class="tab-pane fade p-4 bg-white" id="tabBtnRegister" role="tabpanel" aria-labelledby="register-tab">
+                            <div id="registerPanel">
+                                <div class="mb-4">
+                                    <h4 class="fs-2">Create Account</h4>
+                                    <p>Join us today</p>
+                                </div>
+                                <form id="registerForm">
+                                    <div class="input-group mb-3">
+                                        <span class="input-group-text">
+                                            <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" fill="currentColor" class="bi bi-person" viewBox="0 0 16 16">
+                                                <path d="M8 8a3 3 0 1 0 0-6 3 3 0 0 0 0 6m2-3a2 2 0 1 1-4 0 2 2 0 0 1 4 0m4 8c0 1-1 1-1 1H3s-1 0-1-1 1-4 6-4 6 3 6 4m-1-.004c-.001-.246-.154-.986-.832-1.664C11.516 10.68 10.289 10 8 10s-3.516.68-4.168 1.332c-.678.678-.83 1.418-.832 1.664z"/>
+                                            </svg>
+                                        </span>
+                                        <div class="form-floating">
+                                            <input id="registerUsername" autocomplete="off" type="text" class="form-control" placeholder="" required>
+                                            <label for="registerUsername">Username</label>
+                                        </div>
+                                    </div>
+                                    <div class="input-group mb-3">
+                                        <span class="input-group-text">
+                                            <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" fill="currentColor" class="bi bi-lock" viewBox="0 0 16 16">
+                                                <path fill-rule="evenodd" d="M8 0a4 4 0 0 1 4 4v2.05a2.5 2.5 0 0 1 2 2.45v5a2.5 2.5 0 0 1-2.5 2.5h-7A2.5 2.5 0 0 1 2 13.5v-5a2.5 2.5 0 0 1 2-2.45V4a4 4 0 0 1 4-4M4.5 7A1.5 1.5 0 0 0 3 8.5v5A1.5 1.5 0 0 0 4.5 15h7a1.5 1.5 0 0 0 1.5-1.5v-5A1.5 1.5 0 0 0 11.5 7zM8 1a3 3 0 0 0-3 3v2h6V4a3 3 0 0 0-3-3"/>
+                                            </svg>
+                                        </span>
+                                        <div class="form-floating">
+                                            <input id="registerPassword" autocomplete="off" type="password" class="form-control" placeholder="" required>
+                                            <label for="registerPassword">Password</label>
+                                        </div>
+                                    </div>
+                                    <div class="input-group mb-5">
+                                        <span class="input-group-text">
+                                            <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" fill="currentColor" class="bi bi-lock" viewBox="0 0 16 16">
+                                                <path fill-rule="evenodd" d="M8 0a4 4 0 0 1 4 4v2.05a2.5 2.5 0 0 1 2 2.45v5a2.5 2.5 0 0 1-2.5 2.5h-7A2.5 2.5 0 0 1 2 13.5v-5a2.5 2.5 0 0 1 2-2.45V4a4 4 0 0 1 4-4M4.5 7A1.5 1.5 0 0 0 3 8.5v5A1.5 1.5 0 0 0 4.5 15h7a1.5 1.5 0 0 0 1.5-1.5v-5A1.5 1.5 0 0 0 11.5 7zM8 1a3 3 0 0 0-3 3v2h6V4a3 3 0 0 0-3-3"/>
+                                            </svg>
+                                        </span>
+                                        <div class="form-floating">
+                                            <input id="registerConfirm" autocomplete="off" type="password" class="form-control" placeholder="" required>
+                                            <label for="registerConfirm">Confirm password</label>
+                                        </div>
+                                    </div>
+                                    <button id="registerBtn" data-url="{{ url_for('auth.users') }}" class="btn btn-primary w-100 rounded-5 mb-2">Register</button>
+                                </form>
+                            </div>
+                        </div>
+                    </div>
+                </div> 
+            </section> 
+            <main id="appDashboard" class="{% if not authenticated %}d-none{% endif %}">
+                
+                <nav class="bg-light border navbar navbar-expand-md navbar-light mb-4">
+                    <div class="container-fluid">
+                        <a class="navbar-brand" href="/"><span class="red">V2 PASS</span></a>
+                        <button aria-controls="navbar" aria-expanded="false" aria-label="Toggle navigation" class="navbar-toggler" data-bs-target="#navbar" data-bs-toggle="collapse" type="button">
+                            <span class="navbar-toggler-icon"></span>
+                        </button>
+                        <div class="collapse navbar-collapse" id="navbar">
+                            <ul class="navbar-nav ms-auto mt-2">
+                                <li class="nav-item">
+                                    <button class="nav-link btn" data-bs-toggle="modal" data-bs-target="#profileModal" data-url="{{ url_for('auth.accounts') }}">Account Settings</button>
+                                </li>
+                                <li class="nav-item">
+                                    <button id="logOutBtn" class="nav-link btn btn-link" data-url="{{ url_for('auth.sessions') }}">Log Out</button>
+                                </li>
+                            </ul>
+                        </div>
+                    </div>
+                </nav>
+
+                <section class="mx-auto px-2" style="max-width: 600px; width: 100%;">
+                    
+                    <div id="userWelcomeBanner" class="d-flex align-items-center mb-4 px-1 text-secondary">
+                        <h5 class="m-0 text-dark fw-semibold">Welcome back, <span class="display-current-username">...</span>!</h5>
+                    </div>
+
+                    <div class="card shadow border rounded-4 overflow-hidden bg-white"> 
+                        <div class="d-flex justify-content-between align-items-center px-4 py-3 bg-light border-bottom">
+                            <h4 class="m-0 fw-bold text-dark">Vault</h4>
+                            <div>
+                                <button type="button" class="btn btn-primary btn-delete d-flex align-items-center justify-content-center p-2 rounded-circle" data-bs-toggle="modal" data-bs-target="#addEntry" style="width: 36px; height: 36px;">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-plus-lg" viewBox="0 0 16 16">
+                                        <path fill-rule="evenodd" d="M8 2a.5.5 0 0 1 .5.5v5h5a.5.5 0 0 1 0 1h-5v5a.5.5 0 0 1-1 0v-5h-5a.5.5 0 0 1 0-1h5v-5A.5.5 0 0 1 8 2"/>
+                                    </svg>
+                                </button>
+                            </div>
+                        </div>
+
+                        <div class="p-4">
+                            <div id="vaultEntriesContainer">
+                                <div class="mb-3 no-entries-placeholder">
+                                    <p class="text-muted m-0">No saved login credentials yet.</p>
+                                </div>
+                            </div>
+                        </div>
+
+                    </div>
+                </section>
+
+                <div class="modal fade" id="addEntry" tabindex="-1" aria-labelledby="addEntryLabel" aria-hidden="true">
+                    <div class="modal-dialog">
+                        <div class="modal-content">
+                            <div class="modal-header">
+                                <h5 class="modal-title fw-bold">Save login</h5>
+                                <button id="closeVaultModalBtn" type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                            </div>
+                            <div class="modal-body">
+                                <form id="entryForm">
+                                    <div class="form-floating mb-2">
+                                        <input autocomplete="off" autofocus type="text" class="form-control" id="createVaultWebsite" placeholder="Website">
+                                        <label for="createVaultWebsite">Website</label>
+                                    </div>
+                                    <div class="form-floating mb-2">
+                                        <input autocomplete="off" type="text" class="form-control" id="createVaultUsername" placeholder="Username">
+                                        <label for="createVaultUsername">Username</label>
+                                    </div>
+                                    <div class="form-floating mb-2">
+                                        <input autocomplete="off" type="password" class="form-control" id="createVaultPassword" placeholder="Password">
+                                        <label for="createVaultPassword" id="strength-text">Password</label>
+                                    </div>
+
+                                    <div class="p-3 border rounded bg-light my-2">
+                                        <button type="button" id="staticGenerateBtn" class="btn btn-sm btn-outline-secondary w-100 mb-2">Generate Password</button>
+                                        
+                                        <fieldset id="staticGeneratorOptions">
+                                            <div class="d-flex align-items-center gap-2 mb-1">
+                                                <label class="small fw-bold text-muted text-nowrap m-0">Length:</label>
+                                                <input type="range" id="staticSlider" class="form-range" min="8" max="32" value="16" step="1">
+                                                <input type="number" id="staticBox" class="form-control form-control-sm" style="width: 60px; text-align: center;" min="8" max="32" value="16">
+                                            </div>
+                                            <div id="staticTickContainer" class="d-flex justify-content-between text-muted px-1 mb-2" style="padding-right: 65px; font-size: 0.75rem; font-family: monospace;"></div>
+                                            <div class="form-check form-switch m-0">
+                                                <input class="form-check-input" type="checkbox" id="staticSpecials" checked>
+                                                <label class="form-check-label small text-muted">Include Special Characters</label>
+                                            </div>
+                                        </fieldset>
+                                    </div>
+                                </form>
+                            </div>
+                            <div class="modal-footer">
+                                <div class="button-group w-100 d-flex justify-content-end gap-2">
+                                    <button class="btn btn-secondary" type="button" onclick="clearEntry()">Clear</button>
+                                    <button id="createVaultBtn" class="btn btn-primary" data-url="{{ url_for('vault.entries') }}"   >Save</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="modal fade" id="profileModal" tabindex="-1" aria-labelledby="profileModalLabel" aria-hidden="true">
+                    <div class="modal-dialog">
+                        <div class="modal-content">
+                            <div class="modal-header">
+                                <h5 class="modal-title fw-bold" id="exampleModalLabel">Account Information</h5>
+                                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                            </div>
+                            <div class="modal-body">
+                                <div class="mb-3">
+                                    <p>Username: <strong id="modalUsername">Loading...</strong></p>
+                                </div>
+                                <button id="changePwBtn" type="button" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#verifyPasswordModal">Change Password</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="modal fade" id="verifyPasswordModal" tabindex="-1" aria-hidden="true">
+                    <div class="modal-dialog">
+                        <div class="modal-content">
+                            <div class="modal-header">
+                                <h5 class="modal-title fw-bold">Verify Identity</h5>
+                                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                            </div>
+                            <div class="modal-body">
+                                <p id="verifyModalDescription" class="small text-muted mb-3 d-none"></p>
+                                <form id="verifyPasswordForm">
+                                    <div class="mb-3">
+                                        <label class="form-label">Enter Current Master Password</label>
+                                        <input type="password" id="currentPassword" class="form-control" required autocomplete="current-password">
+                                    </div>
+                                    <div id="verifyError" class="text-danger mb-2 small"></div>
+                                    <button id="verifyPwBtn" type="button" class="btn btn-primary" data-url="{{ url_for('auth.accounts') }}">Verify Password</button>
+                                </form>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="modal fade" id="changePasswordModal" tabindex="-1" aria-hidden="true">
+                    <div class="modal-dialog">
+                        <div class="modal-content">
+                            <div class="modal-header">
+                                <h5 class="modal-title fw-bold">Set New Password</h5>
+                                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                            </div>
+                            <div class="modal-body">
+                                <form id="patchPasswordForm">
+                                    <div class="mb-3">
+                                        <label class="form-label">New Master Password</label>
+                                        <input type="password" id="newPassword" class="form-control" required autocomplete="new-password">
+                                    </div>
+                                    <div class="mb-3">
+                                        <label class="form-label">Confirm Master Password</label>
+                                        <input type="password" id="newConf" class="form-control" required autocomplete="new-password">
+                                    </div>
+                                    <div id="patchError" class="text-danger mb-2 small"></div>
+                                    <button id="updateNewPwBtn" type="button" class="btn btn-success" data-url="{{ url_for('auth.accounts') }}">Update Password</button>
+                                </form>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+            </main>
+
+        <template id="entryTemplate">
+            <div class="vault-entry-card card border mb-3 shadow-sm rounded-3 p-3">
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                    <h6 class="entry-website m-0 fw-bold text-primary"></h6>
+                    <div class="d-flex gap-1">
+                        <button type="button" class="btn btn-sm btn-outline-secondary btn-edit-trigger" data-bs-toggle="modal" data-bs-target="">Edit</button>
+                        <button type="button" class="btn btn-sm btn-outline-danger btn-delete-action">&times;</button>
+                    </div>
+                </div>
+
+                <div class="modal fade entry-modal-container" id="" tabindex="-1" aria-hidden="true">
+                    <div class="modal-dialog">
+                        <div class="modal-content">
+                            <div class="modal-header">
+                                <h5 class="modal-title fw-bold">Update login for <span class="entry-website-title-span"></span></h5>
+                                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                            </div>
+                            <div class="modal-body text-start">
+                                <form class="entry-update-form" method="POST">
+                                    <div class="form-floating mb-2">
+                                        <input autocomplete="off" type="text" class="form-control field-username" placeholder="Username">
+                                        <label>Username</label>
+                                    </div>
+                                    <div class="form-floating mb-2">
+                                        <input autocomplete="off" type="password" class="form-control field-password" placeholder="Password">
+                                        <label>Password</label>
+                                    </div>
+                                    
+                                    <div class="p-3 border rounded bg-light my-2">
+                                        <button type="button" class="btn btn-sm btn-outline-secondary w-100 mb-2 template-generate-trigger">⚡ Generate Password</button>
+                                        <fieldset class="template-generator-options">
+                                            <div class="d-flex align-items-center gap-2 mb-1">
+                                                <label class="small fw-bold text-muted text-nowrap m-0" style="font-size:0.8rem;">Length:</label>
+                                                <input type="range" class="form-range template-slider" min="8" max="32" value="16" step="1">
+                                                <input type="number" class="form-control form-control-sm template-box" style="width: 55px; text-align: center; font-size:0.8rem;" min="8" max="32" value="16">
+                                            </div>
+                                            <div class="d-flex justify-content-between text-muted px-1 mb-2 template-tick-container" style="padding-right: 60px; font-size: 0.7rem; font-family: monospace;"></div>
+                                            <div class="form-check form-switch m-0">
+                                                <input class="form-check-input template-specials" type="checkbox" checked>
+                                                <label class="form-check-label small text-muted" style="font-size:0.75rem;">Include Special Characters</label>
+                                            </div>
+                                        </fieldset>
+                                    </div>
+                                </form>
+                            </div>
+                            <div class="modal-footer">
+                                <div class="button-group w-100 d-flex justify-content-end gap-2">
+                                    <button class="btn btn-secondary" type="button" data-bs-dismiss="modal">Cancel</button>
+                                    <button class="btn btn-primary btn-save-modal-action" type="button">Save</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="border-top pt-2 mt-1">
+                    <div class="mb-1">
+                        <small class="text-muted d-block" style="font-size: 0.75rem;">Username</small>
+                        <p class="entry-username m-0 fw-semibold"></p>
+                    </div>
+                    <div>
+                        <small class="text-muted d-block" style="font-size: 0.75rem;">Password</small>
+                        <div class="d-flex align-items-center gap-2">
+                            <p class="vault-password entry-password-display m-0 font-monospace text-secondary flex-grow-1" data-ciphertext="">••••••••••••</p>
+                            <button type="button" class="btn btn-sm btn-light border p-1" onclick="togglePasswordVisibility(this)">
+                                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+                                    <circle cx="12" cy="12" r="3"></circle>
+                                </svg>
+                            </button>
+                            <button type="button" class="btn btn-sm btn-light border p-1" onclick="copyToClipboard(this)">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" class="bi bi-clipboard" viewBox="0 0 16 16">
+                                    <path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1z"/>
+                                    <path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0z"/>
+                                </svg>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </template>
+
+        <script type="module" src="{{ url_for('static', filename='script.js') }}"></script>
+    </body>
+</html>
