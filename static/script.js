@@ -449,6 +449,9 @@ async function initializeAndLoadDashboard(payload) {
  */
 async function openVerificationModal(reasonText = "Authentication required.") {
     return new Promise((resolve, reject) => {
+        // Track resolution state for the close event
+        let wasResolved = false; 
+
         // 1. Update the UI message dynamically
         const reasonEl = document.getElementById('verifyReasonText');
         if (reasonEl) reasonEl.textContent = reasonText;
@@ -466,8 +469,8 @@ async function openVerificationModal(reasonText = "Authentication required.") {
         const bootstrapModal = new bootstrap.Modal(modalEl);
         bootstrapModal.show();
 
-        // 2. Attach a ONE-TIME submit handler for this specific action request
-            
+        // 2. Define the ONE-TIME async submit handler
+        async function handleSubmit(e) {
             e.preventDefault();
             if (errorEl) errorEl.textContent = "";
 
@@ -494,16 +497,14 @@ async function openVerificationModal(reasonText = "Authentication required.") {
                 const activeDEK = await decryptDEK(vaultParams.wrapped_dek, kek);
 
                 // SUCCESS STATE 🎉
-                // 1. Cache it in your session object for inline eye-icon clicks later if needed
                 cryptoSession.setSession(activeDEK);
-                
-                // 2. Clean up form inputs
                 passwordInput.value = "";
                 
-                // 3. Remove this specific event listener so it doesn't double-fire next time
+                // Set flag and clean up event listeners
+                wasResolved = true;
                 verifyForm.removeEventListener('submit', handleSubmit);
                 
-                // 4. Hide the visual frame and RESOLVE the promise with the key!
+                // Hide the visual frame and RESOLVE the promise with the key!
                 bootstrapModal.hide();
                 resolve(activeDEK);
 
@@ -513,12 +514,12 @@ async function openVerificationModal(reasonText = "Authentication required.") {
                 if (passwordInput) passwordInput.select();
                 // We DO NOT resolve or reject here, keeping the modal open so they can try again.
             }
-        };
+        }
 
         // Bind the form submission
         verifyForm.addEventListener('submit', handleSubmit);
 
-        // Optional: If they manually click close/cancel, reject the promise
+        // Cleanup if they manually click close/cancel
         modalEl.addEventListener('hidden.bs.modal', () => {
             verifyForm.removeEventListener('submit', handleSubmit);
             if (!wasResolved) {
@@ -808,12 +809,12 @@ if (registerBtn) {
         const conf = document.getElementById('registerConfirm').value;
 
         if (!username.trim() || !password.trim() || !conf.trim()) {
-            alert("Please fill out all fields.");
+            document.getElementById("registerError").textContent = "Please fill out all fields.";
             return; 
         }
 
         if (password !== conf) {
-            alert("Error: Password mismatch");
+            document.getElementById("registerError").textContent = "Password mismatch.";
             return;
         }
 
@@ -856,6 +857,7 @@ if (registerBtn) {
             console.error("Registration pipeline error:", globalError);
             alert("An unexpected network or cryptographic error occurred.");
             document.getElementById("registerForm").reset();
+            document.getElementById("registerError").textContent = "";
         }
     });
 }
@@ -900,7 +902,7 @@ if (createVaultBtn) {
         const password = document.getElementById('createVaultPassword').value;
 
         if (!username.trim() || !password.trim() || !website.trim()) {
-            alert("Please fill out all fields.");
+            document.getElementById("createVaultError").textContent = "Please fill out all fields.";
             return; 
         }
 
@@ -931,7 +933,6 @@ if (createVaultBtn) {
                 const template = document.getElementById('entryTemplate');
                 if (!container || !template) return;
 
-                // Remove placeholder if it's the first entry
                 const placeholder = container.querySelector('.no-entries-placeholder');
                 if (placeholder) placeholder.remove();
 
@@ -976,10 +977,11 @@ if (createVaultBtn) {
                 console.error("Failed to retrieve vault entries from REST API.");
             }
             document.getElementById("entryForm").reset();
+            document.getElementById("createVaultError").textContent = "";
             document.getElementById('closeVaultModalBtn').click();
         } catch (globalError) {
             console.error("Login pipeline error:", globalError);
-            alert("Invalid username or password. 7");
+            alert("Invalid username or password");
         }
     });
 }
