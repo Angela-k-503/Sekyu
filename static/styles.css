@@ -27,3 +27,31 @@
   border: none;
   background-color: transparent;
 }
+
+
+div[role="tablist"].border-bottom {
+  border-bottom: 8px solid #0d6efd !important; 
+}
+.tab-custom {
+  background-color: #f8f9fa; 
+  color: #202428;
+  border: 0 !important;
+  box-shadow: 0 -1px 0 #c8cbcf, -1px 0 0 #c8cbcf, 1px 0 0 #c8cbcf;
+  border-top-left-radius: 8px !important;  
+  border-top-right-radius: 8px !important;
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+.tab-custom:hover:not(.active) {
+  background-color: #f8f9fa;
+}
+
+.tab-custom.active {
+  background-color: #0d6efd !important; 
+  color: #ffffff !important;
+  border: 0 !important; 
+  box-shadow: 0 -1px 0 #0d6efd, -1px 0 0 #0d6efd, 1px 0 0 #0d6efd;
+  margin-bottom: -8px; 
+  position: relative;
+  z-index: 1;
+}

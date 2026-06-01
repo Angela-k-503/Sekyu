@@ -1,29 +1,25 @@
 import os
 import sqlite3
-from pydantic import BaseModel, Field, field_validator, ConfigDict
-from typing import Optional
-import re
 
-class PasswordUpdateRequest(BaseModel):
-    # Strict validation for security core
-    # Note: Using your updated field names
-    hash: Optional[str] = Field(None, min_length=64, max_length=64)
-    salt: Optional[str] = Field(None, min_length=32, max_length=32)
-    wrapped_dek: Optional[str] = Field(None, min_length=24, max_length=24)
-    ciphertext: Optional[str] = Field(None, min_length=72, max_length=120)
+def strict_hex_string(val: str, min_len: int = None, max_len: int = None) -> str:
+    if not isinstance(val, str):
+        raise TypeError("Input must be a string")
+    if not val:
+        raise ValueError("Input string cannot be empty.")
+    if not val.isalnum():
+        raise ValueError("Invalid characters detected: only hex digits allowed.")
+    try:
+        int(val, 16)
+    except ValueError:
+        raise ValueError("String contains non-hexadecimal characters.")
+    if min_len is not None and len(val) < min_len:
+        raise ValueError(f"Minimum of {min_len} hex characters not met.")
+    if max_len is not None and len(val) > max_len:
+        raise ValueError(f"Maximum of {max_len} hex characters exceeded.")
+
+    return val
     
-    # Allow extra fields (website, username, etc.) to pass through
-    model_config = ConfigDict(extra='allow')
 
-    # UPDATED: The validator now references the field names defined above
-    @field_validator('hash', 'salt', 'wrapped_dek', 'ciphertext')
-    @classmethod
-    def validate_hex_if_present(cls, v: Optional[str]) -> Optional[str]:
-        if v is None:
-            return None
-        if not re.fullmatch(r'[0-9a-fA-F]+', v):
-            raise ValueError('Must be a valid hex string')
-        return v.lower()
 
 def get_db_path():
     """Dynamically resolves database path to avoid race conditions with load_dotenv()"""

@@ -28,142 +28,206 @@ const fromHex = hexString => {
 // 3. CORE CRYPTOGRAPHIC PIPELINES
 // ========================================================
 async function deriveKeysAndTokens(password, customSalt) {
-    const salt = customSalt || window.crypto.getRandomValues(new Uint8Array(16));
+    const salt = customSalt ? fromHex(customSalt) : crypto.getRandomValues(new Uint8Array(16));
     
-    const fullHashUint8 = await argon2id({
+    const rawhash = await argon2id({
         password: password,
         salt: salt,
         parallelism: 1,
-        iterations: 2,
+        iterations: 3,
         memorySize: 65536,
-        hashLength: 64,
-        outputType: 'binary',
-    });
-
-    const localKeyBuffer = fullHashUint8.slice(0, 32);
-    const serverTokenBuffer = fullHashUint8.slice(32, 64);
-
-    return {
-        salt: salt,
-        serverTokenBuffer: serverTokenBuffer,
-        localKeyBuffer: localKeyBuffer,
-    };
-}
-
-async function deriveCanary(serverTokenBuffer, salt) {
-    return await argon2id({
-        password: serverTokenBuffer,
-        salt: salt,
-        parallelism: 1,
-        iterations: 1,
-        memorySize: 8192, 
-        hashLength: 16,
+        hashLength: 32,
         outputType: 'binary'
     });
-}
 
-async function encryptCanaryWithEmbeddedIv(localKeyBuffer, canaryBuffer) {
-    const aesKey = await window.crypto.subtle.importKey(
-        "raw", localKeyBuffer, { name: "AES-GCM" }, false, ["encrypt"]
+    const kek = await crypto.subtle.importKey(       
+        "raw",
+        rawhash,
+        "AES-GCM",
+        false,
+        ["encrypt", "decrypt"]
     );
 
-    const iv = window.crypto.getRandomValues(new Uint8Array(12));
-
-    const encryptedBuffer = await window.crypto.subtle.encrypt(
-        { name: "AES-GCM", iv: iv },
-        aesKey,
-        canaryBuffer
-    );
-    const encryptedBytes = new Uint8Array(encryptedBuffer);
-
-    const combinedBuffer = new Uint8Array(iv.length + encryptedBytes.length);
-    combinedBuffer.set(iv, 0);
-    combinedBuffer.set(encryptedBytes, iv.length);
-
-    return toHex(combinedBuffer);
-}
-
-async function verifyCanaryWithEmbeddedIv(localKeyBuffer, combinedHex) {
-    const combinedBytes = fromHex(combinedHex);
-    const iv = combinedBytes.subarray(0, 12);
-    const ciphertext = combinedBytes.subarray(12);
-
-    const aesKey = await window.crypto.subtle.importKey(
-        "raw", localKeyBuffer, { name: "AES-GCM" }, false, ["decrypt"]
-    );
-
-    try {
-        return await window.crypto.subtle.decrypt(
-            { name: "AES-GCM", iv: iv },
-            aesKey,
-            ciphertext
-        );
-    } catch (error) {
-        return null;
+    return {
+        saltHex: toHex(salt),
+        hashHex: toHex(rawhash),
+        kek,
     }
 }
 
-function generateDEK() {
-    return window.crypto.getRandomValues(new Uint8Array(32));
-}
 
-async function encryptDEKWithCanary(decryptedCanaryBuffer, dekBytes) {
-    const canaryKey = await window.crypto.subtle.importKey(
-        "raw", decryptedCanaryBuffer, { name: "AES-GCM" }, false, ["encrypt"]
-    );
+async function encryptDEK(kek, rawDekBytes) {
+    const iv = crypto.getRandomValues(new Uint8Array(12));
 
-    const iv = window.crypto.getRandomValues(new Uint8Array(12));
-
-    const encryptedBuffer = await window.crypto.subtle.encrypt(
+    // 3. Perform standard AES-GCM encryption
+    const encryptedBuffer = await crypto.subtle.encrypt(
         { name: "AES-GCM", iv: iv },
-        canaryKey,
-        dekBytes
+        kek,
+        rawDekBytes
     );
+
     const encryptedBytes = new Uint8Array(encryptedBuffer);
 
-    const combinedBuffer = new Uint8Array(iv.length + encryptedBytes.length);
-    combinedBuffer.set(iv, 0);
-    combinedBuffer.set(encryptedBytes, iv.length);
+    // 4. Combine IV (12 bytes) + Ciphertext into a single container array
+    const encryptedDek= new Uint8Array(iv.length + encryptedBytes.length);
+    encryptedDek.set(iv, 0);
+    encryptedDek.set(encryptedBytes, iv.length);
 
-    return toHex(combinedBuffer);
+    // 5. Convert to a standard hex string for backend storage
+    return toHex(encryptedDek);
 }
 
-async function decryptDEKWithCanary(decryptedCanaryBuffer, combinedHex) {
-    const combinedBytes = fromHex(combinedHex);
-    const iv = combinedBytes.subarray(0, 12);
-    const ciphertext = combinedBytes.subarray(12);
+async function decryptDEK(encryptedDekHex, kek, isExtractable = false) {
+    const encryptedDekBytes = fromHex(encryptedDekHex);
 
-    const canaryKey = await window.crypto.subtle.importKey(
-        "raw", decryptedCanaryBuffer, { name: "AES-GCM" }, false, ["decrypt"]
-    );
+    const iv = encryptedDekBytes.slice(0, 12);
+    const encryptedBytes = encryptedDekBytes.slice(12);
 
     try {
-        const decryptedDEK = await window.crypto.subtle.decrypt(
-            { name: "AES-GCM", iv: iv },
-            canaryKey,
-            ciphertext
+        const decryptedBuffer = await crypto.subtle.decrypt(
+            { name: "AES-GCM", iv },
+            kek,
+            encryptedBytes
         );
-        return new Uint8Array(decryptedDEK);
-    } catch (error) {
-        throw new Error("Failed to decrypt DEK. Integrity check failed.");
+
+        const rawDekBytes = new Uint8Array(decryptedBuffer);
+
+        return await crypto.subtle.importKey(
+            "raw",
+            rawDekBytes,
+            "AES-GCM",
+            isExtractable, 
+            ["encrypt", "decrypt"]
+        );
+
+    } catch (err) {
+        console.error(
+            "Decryption failed. Invalid key or compromised ciphertext tag.",
+            err
+        );
+
+        throw new Error(
+            "Integrity check failed: Decryption rejected."
+        );
+    }
+}
+
+async function encryptVaultPassword(plainTextPassword, dek) {
+    
+    const plainTextBytes = new TextEncoder().encode(plainTextPassword);
+
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+
+    const encryptedBuffer = await crypto.subtle.encrypt(
+        {
+            name: "AES-GCM",
+            iv: iv
+        },
+        dek, // Your functional DEK CryptoKey object
+        plainTextBytes
+    );
+
+    const ciphertextBytes = new Uint8Array(encryptedBuffer);
+
+    const ciphertext = new Uint8Array(iv.length + ciphertextBytes.length);
+    ciphertext.set(iv, 0);
+    ciphertext.set(ciphertextBytes, iv.length);
+
+    // 5. Convert to a standard Hex string to safely transmit via JSON.
+    return toHex(ciphertext);
+}
+
+async function decryptVaultPassword(dek, ciphertextHex) {
+
+    const ciphertextBytes = fromHex(ciphertextHex);
+
+    const iv = ciphertextBytes.slice(0, 12);
+    const encryptedBytes = ciphertextBytes.slice(12);
+
+    try {
+        const decryptedBuffer = await crypto.subtle.decrypt(
+            { name: "AES-GCM", iv },
+            dek,
+            encryptedBytes
+        );
+
+        return new Uint8Array(decryptedBuffer);
+
+    } catch (err) {
+        console.error(
+            "Decryption failed. Invalid key or compromised ciphertext tag.1",
+            err
+        );
+
+        throw new Error(
+            "Integrity check failed: Decryption rejected."
+        );
     }
 }
 
 // ========================================================
-// 4. NETWORKING, SECURITY TIMERS & FORCED LOGOUTS
+// 4. NETWORK BOUNDARY & ROUTING INTERCEPTORS
+// ========================================================
+async function secureFetch(url, options = {}) {
+
+    if (tokenExpirationTime &&
+        Date.now() >= tokenExpirationTime) {
+
+        handleForcedLogout();
+        throw new Error("Session expired client-side");
+    }
+
+    const headers = {
+        ...(options.headers || {})
+    };
+
+    const csrfToken = getCookie('csrf_access_token');
+    if (csrfToken) {
+        headers['X-CSRF-Token'] = csrfToken;
+    }
+
+    const response = await fetch(url, {
+        ...options,
+        credentials: 'include',
+        headers
+    });
+
+    if (response.status === 401) {
+        handleForcedLogout();
+        throw new Error("Unauthorized");
+    }
+
+    return response;
+}
+
+// ========================================================
+// 5. UNIFIED TERMINATION & SESSION CLEANUP
 // ========================================================
 function startSessionCountdown(durationInMinutes) {
     const durationInMs = durationInMinutes * 60 * 1000;
     tokenExpirationTime = Date.now() + durationInMs;
+    if (sessionTimeoutId) clearTimeout(sessionTimeoutId);
     
-    if (sessionTimeoutId) {
-        clearTimeout(sessionTimeoutId);
-        console.log("🧹 Previous session countdown cleared.");
-    }
-    
-    sessionTimeoutId = setTimeout(() => {
+    sessionTimeoutId = setTimeout(async () => {
         alert("Your 15-minute security session has ended. Please log in again.");
+        const logOutBtn = document.getElementById('logOutBtn');
+        if (logOutBtn) {
+            const logOutUrl = logOutBtn.getAttribute('data-url');
+            if (logOutUrl) {
+                try {
+                    await secureFetch(logOutUrl, { 
+                        method: 'DELETE', 
+                        credentials: 'include' 
+                    });
+                } catch (err) {
+                    console.warn("Could not reach backend to invalidate token on timeout:", err);
+                }
+            }
+        }
+
+        // 2. Trigger your visual cleanup and UI reset
         handleForcedLogout();
+        
     }, durationInMs);
 }
 
@@ -174,82 +238,30 @@ function handleForcedLogout() {
         clearTimeout(sessionTimeoutId);
         sessionTimeoutId = null;
     }
+
     const container = document.getElementById('vaultEntriesContainer');
-    if (container) {
-        container.innerHTML = '<div class="mb-3 no-entries-placeholder"><p>No saved login credentials yet.</p></div>';
-    }
-    // --- NEW: CLEAN UP OPEN MODALS & BACKDROPS ---
-    // 1. Force dismiss all open Bootstrap modals manually
-    const openModals = document.querySelectorAll('.modal.show');
-    openModals.forEach(modalEl => {
-        const modalInstance = bootstrap.Modal.getInstance(modalEl);
-        if (modalInstance) {
-            modalInstance.hide();
-        }
-    });
+    if (container) container.innerHTML = '<div class="mb-3 no-entries-placeholder"><p>No saved login credentials yet.</p></div>';
 
-    // 2. Erase frozen backdrop layers left behind
-    const backdrops = document.querySelectorAll('.modal-backdrop');
-    backdrops.forEach(backdrop => backdrop.remove());
+    document.querySelectorAll('.modal.show').forEach(m => { const inst = bootstrap.Modal.getInstance(m); if (inst) inst.hide(); });
+    document.querySelectorAll('.modal-backdrop').forEach(b => b.remove());
 
-    // Clear all authentication forms so data doesn't leak on logout
-    resetFormById("loginForm");
-    resetFormById("registerForm");
-    resetFormById("entryForm"); // Clear the add-entry form too for safety
+    document.getElementById("loginForm").reset();
+    document.getElementById("registerForm").reset();
+    document.getElementById("entryForm").reset();
+    document.getElementById("verifyPasswordForm").reset();
+    document.getElementById("patchPasswordForm").reset();
+    document.getElementById("entry-update-form").reset();
 
-    // EXPLICIT VISIBILITY MANAGEMENT:
+    
+
     const authSection = document.getElementById('authSection');
     const appDashboard = document.getElementById('appDashboard');
-    
     if (authSection) authSection.classList.remove('d-none');
     if (appDashboard) appDashboard.classList.add('d-none');
-
-    console.log("🔒 Session hard cutoff reached. Cryptographic assets purged.");
-}
-
-// Helper function to read a cookie value by name
-function getCookie(name) {
-    const value = `; ${document.cookie}`;
-    const parts = value.split(`; ${name}=`);
-    if (parts.length === 2) return parts.pop().split(';').shift();
-    return null;
-}
-
-async function secureFetch(url, options = {}) {
-    if (tokenExpirationTime && Date.now() >= tokenExpirationTime) {
-        console.warn("🛑 Fetch blocked: Client-side timer shows the token has expired.");
-        handleForcedLogout();
-        throw new Error("Session expired client-side");
-    }
-
-    // Initialize custom headers keeping any user-passed headers intact
-    const clientHeaders = { ...(options.headers || {}) };
-
-    // AUTOMATIC CSRF HANDLING: Extract token if using JWT cookie CSRF protection
-    const csrfToken = getCookie('csrf_access_token');
-    if (csrfToken) {
-        clientHeaders['X-CSRF-Token'] = csrfToken;
-    }
-
-    const secureOptions = {
-        ...options,
-        credentials: 'include', // Crucial to send HTTP-only JWT cookies
-        headers: clientHeaders
-    };
-
-    const response = await fetch(url, secureOptions);
-    if (response.status === 401) {
-        console.warn("🚫 401 Unauthorized caught. Defaulting authentication state to false.");
-        handleForcedLogout(); // Wipes memory strings and shows login panel instantly
-        throw new Error("Unauthorized API access attempt intercepted.");
-    }
-
-
-    return response;
 }
 
 // ========================================================
-// 5. PASSWORD STRENGTH & GENERATION ENGINES
+// 6. PASSWORD STRENGTH & GENERATION ENGINES
 // ========================================================
 function runSecureGenerator(length, includeSpecials) {
     const alphas = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
@@ -330,21 +342,10 @@ function checkStrength(pw) {
     else if (score >= 3) strengthText.innerText = "Strength: Strong";
 }
 
-/**
- * DRY Utility to safely reset any form by ID
- * @param {string} formId - The ID of the HTML form element
- */
-function resetFormById(formId) {
-    const form = document.getElementById(formId);
-    if (form) {
-        form.reset();
-    }
-}
-
 // ========================================================
-// 6. DASHBOARD DOM MANIPULATION & POPULATION
+// 7. VAULT DISPLAY AND PRESENTATION LAYER
 // ========================================================
-async function decryptAndPopulateDashboard(entries, activeDEK, clearContainer = true) {
+async function decryptAndPopulateDashboard(entries, clearContainer = true) {
     
     console.log("decryptAndPopulateDashboard called");
     console.log("entries:", entries);
@@ -412,60 +413,195 @@ async function decryptAndPopulateDashboard(entries, activeDEK, clearContainer = 
     });
 }
 
+async function initializeAndLoadDashboard(payload) {
+    try {
+        // 1. Extract data from the server payload
+        const { masterUsername, entries } = payload;
+
+        // 2. Inject the master username into the required DOM elements
+        const welcomeSpan = document.querySelector('.display-current-username');
+        const profileModalStrong = document.getElementById('modalUsername');
+        
+        if (welcomeSpan) welcomeSpan.textContent = masterUsername || "User";
+        if (profileModalStrong) profileModalStrong.textContent = masterUsername || "Unknown";
+
+        // 3. Handle UI transitions (Hide Auth, Show Dashboard)
+        const authSection = document.getElementById('authSection');
+        const appDashboard = document.getElementById('appDashboard');
+        
+        if (authSection) authSection.classList.add('d-none');
+        if (appDashboard) appDashboard.classList.remove('d-none');
+
+        // 4. Pass the entries array to your existing population function
+        // (This function already handles the empty state if entries is empty/undefined)
+        await decryptAndPopulateDashboard(entries, true);
+        
+    } catch (error) {
+        console.error("Failed to initialize dashboard layout:", error);
+    }
+}
+
+/**
+ * Global/Reusable Verification Gate
+ * Pauses execution, prompts for the Master Password, fetches keys, and returns the activeDEK.
+ * @param {string} reasonText - The custom message showing why the user needs to authenticate.
+ * @returns {Promise<Uint8Array>} - Resolves with the raw decrypted activeDEK upon success.
+ */
+async function openVerificationModal(reasonText = "Authentication required.") {
+    return new Promise((resolve, reject) => {
+        // 1. Update the UI message dynamically
+        const reasonEl = document.getElementById('verifyReasonText');
+        if (reasonEl) reasonEl.textContent = reasonText;
+
+        const modalEl = document.getElementById('verifyPasswordModal');
+        const verifyForm = document.getElementById('verifyPasswordForm');
+        const passwordInput = document.getElementById('currentPassword');
+        const errorEl = document.getElementById('verifyError');
+
+        // Clear any old values or errors
+        if (errorEl) errorEl.textContent = "";
+        if (passwordInput) passwordInput.value = "";
+
+        // Show the Bootstrap Modal programmatically
+        const bootstrapModal = new bootstrap.Modal(modalEl);
+        bootstrapModal.show();
+
+        // 2. Attach a ONE-TIME submit handler for this specific action request
+            
+            e.preventDefault();
+            if (errorEl) errorEl.textContent = "";
+
+            const masterPassword = passwordInput.value;
+
+            if (!masterPassword.trim()) {
+                alert("Password field cannot be empty.");
+                return;
+            }
+
+            try {
+                // Step A: Reach out to the server dynamically to grab salt & wrapped_dek
+                const accountRes = await secureFetch('/accounts', { 
+                    method: "GET", 
+                    headers: { 'Content-Type': 'application/json' }
+                });
+                if (!accountRes.ok) throw new Error("Could not download security parameters.");
+                
+                const vaultParams = await accountRes.json();
+
+                const { kek } = await deriveKeysAndTokens(masterPassword, vaultParams.salt);
+                
+                // Step C: Attempt local DEK decryption
+                const activeDEK = await decryptDEK(vaultParams.wrapped_dek, kek);
+
+                // SUCCESS STATE 🎉
+                // 1. Cache it in your session object for inline eye-icon clicks later if needed
+                cryptoSession.setSession(activeDEK);
+                
+                // 2. Clean up form inputs
+                passwordInput.value = "";
+                
+                // 3. Remove this specific event listener so it doesn't double-fire next time
+                verifyForm.removeEventListener('submit', handleSubmit);
+                
+                // 4. Hide the visual frame and RESOLVE the promise with the key!
+                bootstrapModal.hide();
+                resolve(activeDEK);
+
+            } catch (err) {
+                console.error("Re-verification failed:", err);
+                if (errorEl) errorEl.textContent = "Incorrect master password. Please try again.";
+                if (passwordInput) passwordInput.select();
+                // We DO NOT resolve or reject here, keeping the modal open so they can try again.
+            }
+        };
+
+        // Bind the form submission
+        verifyForm.addEventListener('submit', handleSubmit);
+
+        // Optional: If they manually click close/cancel, reject the promise
+        modalEl.addEventListener('hidden.bs.modal', () => {
+            verifyForm.removeEventListener('submit', handleSubmit);
+            if (!wasResolved) {
+                reject(new Error("Verification cancelled by user."));
+            }
+        }, { once: true });
+    });
+}
+
 // ========================================================
-// 7. REST VAULT ENTRIES: CORE ACTIONS (Shared globally via window)
+// 8. REST VAULT ENTRIES: CORE ACTIONS (Shared globally via window)
 // ========================================================
 async function togglePasswordVisibility(btn) {
-    const container = btn.parentElement;
-    const passwordDisplay = container.querySelector('.entry-password-display');
-    const icon = btn.querySelector('svg');
-    
-    if (!passwordDisplay || !icon) return;
+    // 1. Correctly locate the outer card wrapper based on your HTML class
+    const vaultCard = btn.closest('.vault-entry-card');
+    if (!vaultCard) return;
 
+    const passwordDisplay = vaultCard.querySelector('.entry-password-display');
+    const icon = btn.querySelector('svg');
+    if (!passwordDisplay || !icon) return; 
+
+    // Pre-defined SVG icons matching your styling rules
+    const eyeIconHtml = `
+        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+        <circle cx="12" cy="12" r="3"></circle>
+    `;
+    const eyeOffIconHtml = `
+        <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path>
+        <line x1="1" y1="1" x2="23" y2="23"></line>
+    `;
+
+    // MODE A: Reveal the hidden password
     if (passwordDisplay.textContent === "••••••••••••") {
+        
+        // Step 1: Securely reset all other open passwords across the entire screen
         document.querySelectorAll('.entry-password-display').forEach(el => {
             if (el.textContent !== "••••••••••••") {
                 el.textContent = "••••••••••••";
-                const companionBtn = el.parentElement.querySelector('button[onclick="togglePasswordVisibility(this)"]');
-                if (companionBtn) {
-                    const companionIcon = companionBtn.querySelector('svg');
-                    if (companionIcon) {
-                        companionIcon.innerHTML = `
-                            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
-                            <circle cx="12" cy="12" r="3"></circle>
-                        `;
+                
+                // Jump to the sibling container to locate the precise companion button
+                const associatedCard = el.closest('.vault-entry-card');
+                if (associatedCard) {
+                    // Find the toggle button using its relative attribute location
+                    const companionBtn = associatedCard.querySelector('button[onclick="togglePasswordVisibility(this)"]');
+                    if (companionBtn) {
+                        const companionIcon = companionBtn.querySelector('svg');
+                        if (companionIcon) companionIcon.innerHTML = eyeIconHtml;
                     }
                 }
             }
         });
 
+        // Step 2: Extract encrypted value
         const ciphertext = passwordDisplay.getAttribute('data-ciphertext');
-        const activeDEK = cryptoSession.getDEK(); 
+        let activeDEK = cryptoSession.getDEK(); 
 
+        // Step 3: Handle authorization drops
         if (!activeDEK) {
-            alert("Session expired. Please log in again.");
-            return;
+            try {
+                // Await pauses processing right here until the modal form resolves successfully
+                activeDEK = await openVerificationModal("Confirm your master password to view this secret.");
+            } catch (modalCancel) {
+                console.warn("View authorization bypassed by user.");
+                return; // Stop processing safely if they click cancel
+            }
         }
 
+        // Step 4: Run the decryption engine
         try {
-            // FIX: Replaced non-existent yourDecryptFunction with correct decryption operation 
-            const plainBuffer = await decryptDEKWithCanary(activeDEK, ciphertext);
+            const plainBuffer = await decryptVaultPassword(activeDEK, ciphertext); 
             const plainPassword = new TextDecoder().decode(plainBuffer);
             
             passwordDisplay.textContent = plainPassword;
-            icon.innerHTML = `
-                <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path>
-                <line x1="1" y1="1" x2="23" y2="23"></line>
-            `;
+            icon.innerHTML = eyeOffIconHtml;
         } catch (err) {
             console.error("Decryption error:", err);
+            alert("Failed to decrypt password.");
         }
+
+    // MODE B: Mask the visible password
     } else {
         passwordDisplay.textContent = "••••••••••••";
-        icon.innerHTML = `
-            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
-            <circle cx="12" cy="12" r="3"></circle>
-        `;
+        icon.innerHTML = eyeIconHtml;
     }
 }
 
@@ -476,16 +612,21 @@ async function copyToClipboard(btn) {
     if (!passwordDisplay) return;
 
     const ciphertext = passwordDisplay.getAttribute('data-ciphertext');
-    const activeDEK = cryptoSession.getDEK();
+    let activeDEK = cryptoSession.getDEK();
 
     if (!activeDEK) {
-        alert("Session expired. Please log in again.");
-        return;
+        try {
+            // Await pauses processing right here until the modal form resolves successfully
+            activeDEK = await openVerificationModal("Confirm your master password to view this secret.");
+        } catch (modalCancel) {
+            console.warn("View authorization bypassed by user.");
+            return; // Stop processing safely if they click cancel
+        }
     }
 
     try {
         // FIX: Replaced non-existent yourDecryptFunction with correct decryption operation
-        const plainBuffer = await decryptDEKWithCanary(activeDEK, ciphertext);
+        const plainBuffer = await decryptVaultPassword(activeDEK, ciphertext);
         const plainPassword = new TextDecoder().decode(plainBuffer);
         
         await navigator.clipboard.writeText(plainPassword);
@@ -572,28 +713,27 @@ async function submitUpdateForm(btn, id) {
     }
 }
 
-// Attach functions explicitly to window context to keep onclick attribute callbacks working with ESM type scripts
 window.togglePasswordVisibility = togglePasswordVisibility;
 window.copyToClipboard = copyToClipboard;
 window.deleteEntry = deleteEntry;
 window.submitUpdateForm = submitUpdateForm;
 
 // ========================================================
-// 8. INTERACTIVE AUTH FLOW LISTENERS (LOGIN, REG, LOGOUT)
+// 9. INTERACTIVE AUTH FLOW LISTENERS (LOGIN, REG, LOGOUT)
 // ========================================================
-
 // SIGN IN ACTIONS
 const loginBtn = document.getElementById('loginBtn');
 if (loginBtn) {
+    const loginError = document.getElementById('loginError');
     loginBtn.addEventListener('click', async (e) => {
         e.preventDefault();
-
+        
         const loginUrl = loginBtn.getAttribute('data-url');
         const username = document.getElementById('loginUsername').value;
         const password = document.getElementById('loginPassword').value;
 
         if (!username.trim() || !password.trim()) {
-            alert("Please fill out all fields.");
+            loginError.textContent = "Please fill out all fields.";
             return; 
         }
 
@@ -605,7 +745,7 @@ if (loginBtn) {
             });
 
             if (!res.ok) {
-                alert("Invalid username or password. 1");
+                loginError.textContent = "Invalid username or password."
                 return;
             }
 
@@ -617,7 +757,7 @@ if (loginBtn) {
             try {
                 activeDEK = await decryptDEK(authParams.wrapped_dek, kek);
             } catch (dekError) {
-                alert("Invalid username or password. 3");
+                loginError.textContent = "Invalid username or password."
                 return;
             }
 
@@ -634,6 +774,9 @@ if (loginBtn) {
                 startSessionCountdown(15);
 
                 cryptoSession.setSession(activeDEK);
+
+                document.getElementById("loginForm").reset();
+                loginError.textContent = "";
                 
                 const entriesData = await secureFetch("/entries", { method: "GET" });
 
@@ -643,7 +786,8 @@ if (loginBtn) {
 
                 console.log("🔒 Vault unlocked. Cryptographic assets locked into runtime memory.");
             } else {
-                alert("Invalid username or password. 4");
+                loginError.textContent = "Invalid username or password."
+                return;
             }
             } catch (globalError) {
                 console.error(globalError);
@@ -674,7 +818,7 @@ if (registerBtn) {
         }
 
         try {
-            const { salt, hashHex, kek } = await deriveKeysAndTokens(password);
+            const { saltHex, hashHex, kek } = await deriveKeysAndTokens(password);
             const rawDekBytes = crypto.getRandomValues(new Uint8Array(32));
             const wrapped_dek = await encryptDEK(kek, rawDekBytes)
 
@@ -684,7 +828,7 @@ if (registerBtn) {
                 body: JSON.stringify({ 
                     username: username, 
                     user_hash: hashHex, 
-                    user_salt: salt,  
+                    user_salt: saltHex,  
                     wrapped_dek: wrapped_dek
                 })
             });
@@ -692,9 +836,10 @@ if (registerBtn) {
             if (res.ok) {
                 startSessionCountdown(15);
 
-                cryptoSession.setSession(rawDekBytes);
+                cryptoSession.setSession(wrapped_dek);
 
-                resetFormById("registerForm")
+                document.getElementById("registerForm").reset();
+                document.getElementById("registerError").textContent = "";
 
                 const entriesData = await secureFetch("/entries", { method: "GET" });
 
@@ -710,8 +855,36 @@ if (registerBtn) {
         } catch (globalError) {
             console.error("Registration pipeline error:", globalError);
             alert("An unexpected network or cryptographic error occurred.");
-            resetFormById("registerForm")
+            document.getElementById("registerForm").reset();
         }
+    });
+}
+
+// LOG OUT ACTIONS
+const logOutBtn = document.getElementById('logOutBtn');
+if (logOutBtn) {
+    logOutBtn.addEventListener('click', async (e) => {
+        e.preventDefault();
+
+        const logOutUrl = logOutBtn.getAttribute('data-url');
+        
+        if (logOutUrl) {
+            try {
+                const response = await secureFetch(logOutUrl, { 
+                    method: 'DELETE', 
+                    credentials: 'include' 
+                });
+
+                if (!response.ok) {
+                    console.warn("Token was likely already expired on arrival.");
+                } else {
+                    console.log("Token successfully sent to blocklist.");
+                }
+            } catch (err) {
+                console.error("Network error during logout notice:", err);
+            }
+        }
+        handleForcedLogout(); 
     });
 }
 
@@ -733,13 +906,12 @@ if (createVaultBtn) {
 
         try {
             const dek = cryptoSession.getDEK();
-            const encoder = new TextEncoder();
-            const byteArray = encoder.encode(password);
+            
 
             console.log("DEK:", dek);
             console.log("Uint8Array?", dek instanceof Uint8Array);
 
-            const ciphertext = await encryptDEKWithCanary(dek, byteArray);
+            const ciphertext = await encryptVaultPassword(password, dek);
 
             const res = await secureFetch(createVaultUrl, {
                 method: 'POST',
@@ -803,7 +975,7 @@ if (createVaultBtn) {
             } else {
                 console.error("Failed to retrieve vault entries from REST API.");
             }
-            resetFormById("entryForm");
+            document.getElementById("entryForm").reset();
             document.getElementById('closeVaultModalBtn').click();
         } catch (globalError) {
             console.error("Login pipeline error:", globalError);
@@ -830,36 +1002,39 @@ if (verifyPwBtn) {
 
         try {
             // Step A: Reach out to the server dynamically to grab salt & wrapped_dek
-            let accountRes = await secureFetch(baseUrl, { method: "GET" });
+            let accountRes = await secureFetch(baseUrl, { 
+                method: "GET",
+                headers: { 'Content-Type': 'application/json'}
+            });
             if (!accountRes.ok) throw new Error("Could not download security parameters.");
             
             const vaultParams = await accountRes.json();
 
             const { hashHex, kek } = await deriveKeysAndTokens(passwordInput.value, vaultParams.salt);
 
-            let activeDEK = cryptoSession.getDEK();
-            if (!activeDEK) {
-                activeDEK = await decryptDEK(vaultParams.wrapped_dek, kek);
-                cryptoSession.setSession(activeDEK);
-            }
-
             accountRes = await secureFetch(baseUrl, {
                 method: "POST",
                 headers: { 'Content-Type': 'application/json' },
                 credentials: 'include',
-                body: JSON.stringify({ hash: hashHex })
+                body: JSON.stringify({ current_hash: hashHex })
             });
             if (!accountRes.ok) {
                 const payload = await accountRes.json();
                 alert(payload.error)
-                resetFormById("verifyForm");
+                verifyForm.reset();
                 return;
             }
+            
+            cryptoSession.clearSession(); 
+            const activeDEK = await decryptDEK(vaultParams.wrapped_dek, kek, true);
+            cryptoSession.setSession(activeDEK);
+
             verifyForm.reset();
             const modal1 = bootstrap.Modal.getInstance(document.getElementById('verifyPasswordModal'));
             const modal2 = new bootstrap.Modal(document.getElementById('changePasswordModal'));
             if (modal1) modal1.hide();
             if (modal2) modal2.show();
+            
         } catch (err) {
             console.error("POST error:", err);
             verifyError.textContent = "Network error. Try again.";
@@ -871,9 +1046,9 @@ const updateNewPwBtn = document.getElementById('updateNewPwBtn');
 if (updateNewPwBtn) {
     const baseUrl = updateNewPwBtn.getAttribute('data-url');
     const patchForm = document.getElementById('patchPasswordForm');
-        const newPasswordInput = document.getElementById('newPassword');
-        const newConfInput = document.getElementById('newConf');
-        const patchError = document.getElementById('patchError');
+    const newPasswordInput = document.getElementById('newPassword');
+    const newConfInput = document.getElementById('newConf');
+    const patchError = document.getElementById('patchError');
     updateNewPwBtn.addEventListener('click', async (e) => {
         e.preventDefault();
 
@@ -901,16 +1076,18 @@ if (updateNewPwBtn) {
             
             const { saltHex, hashHex, kek } = await deriveKeysAndTokens(newPasswordInput.value);
 
-            const wrapped_dek = await encryptDEK(kek, activeDEK);
+            const rawDekBytes = new Uint8Array(await crypto.subtle.exportKey("raw", activeDEK));
+
+            const wrapped_dek = await encryptDEK(kek, rawDekBytes);
 
             const accountRes = await secureFetch(baseUrl, {
                 method: "PATCH",
                 headers: { 'Content-Type': 'application/json' },
                 credentials: 'include',
                 body: JSON.stringify({
-                    salt: saltHex,
-                    hash: hashHex,
-                    wrapped_dek: wrapped_dek
+                    new_salt: saltHex,
+                    new_hash: hashHex,
+                    new_wrapped_dek: wrapped_dek
                 })
             });
 
@@ -931,33 +1108,19 @@ if (updateNewPwBtn) {
 }
 
 
-
-// LOGOUT ACTIONS
-const logOutBtn = document.getElementById('logOutBtn');
-if (logOutBtn) {
-    logOutBtn.addEventListener('click', async (e) => {
-        e.preventDefault();
-        const logOutUrl = logOutBtn.getAttribute('data-url');
-        
-        try {
-            const { response, data } = await secureFetch(logOutUrl, { method: 'DELETE' });
-            if (response.status === 204 || response.status === 401 || data === null) {
-                handleForcedLogout();
-                console.log("🔒 Logout complete. Session references systematically cleared.");
-            } else {
-                handleForcedLogout();           
-            }
-        } catch (err) {
-            console.error("Logout runtime error caught:", err);
-            handleForcedLogout();
-        }
-    });
-}
-
 // ========================================================
 // 9. DOM INITIALIZATION LIFECYCLE HOOKS
 // ========================================================
-document.addEventListener("DOMContentLoaded", () => {
+document.addEventListener("DOMContentLoaded", async () => {
+
+    const clearAuthForms = () => {
+        document.getElementById('loginForm')?.reset();
+        document.getElementById('registerForm')?.reset();
+    };
+
+    document.getElementById('register-tab')?.addEventListener('click', clearAuthForms);
+    document.getElementById('login-tab')?.addEventListener('click', clearAuthForms);
+    
     initializePasswordGenerator({
         slider: document.getElementById('staticSlider'),
         box: document.getElementById('staticBox'),
@@ -968,10 +1131,45 @@ document.addEventListener("DOMContentLoaded", () => {
         specialsCheckbox: document.getElementById('staticSpecials')
     });
 
-    const createVaultPassword = document.getElementById('createVaultPassword');
-    if (createVaultPassword) {
-        createVaultPassword.addEventListener('input', () => {
-            checkStrength(createVaultPassword.value);
+    document.addEventListener('hidden.bs.modal', (event) => {
+        const closingModal = event.target;
+        
+        const form = closingModal.querySelector('form');
+        
+        if (form) {
+            form.reset(); 
+            form.classList.remove('was-validated');
+        }
+        closingModal.querySelectorAll('.text-danger').forEach(errorContainer => {
+            errorContainer.textContent = '';
         });
+    });
+    
+    const registerPwInput = document.getElementById('registerPassword');
+    const createVaultPwInput = document.getElementById('createVaultPassword');
+    
+    if (registerPwInput) {
+        registerPwInput.addEventListener('input', (e) => checkStrength(e.target.value));
+    }
+    if (createVaultPwInput) {
+        createVaultPwInput.addEventListener('input', (e) => checkStrength(e.target.value));
+    }
+
+    const appDashboard = document.getElementById('appDashboard');
+    
+    // Check if the dashboard is already visible due to Jinja rendering
+    if (appDashboard && !appDashboard.classList.contains('d-none')) {
+        try {
+            const entriesData = await secureFetch("/entries", { method: "GET" });
+            const payload = await entriesData.json();
+            
+            // Re-hydrate everything from the server response
+            await initializeAndLoadDashboard(payload);
+        } catch (err) {
+            console.error("Silent sync failure on refresh:", err);
+        }
     }
 });
+
+
+function getCookie(name) { const match = document.cookie.match(new RegExp('(^| )' + name + '=([^;]+)')); return match ? match[2] : null; }

@@ -14,10 +14,10 @@
             <section id="authSection" class="d-flex min-vh-100 align-items-center justify-content-center {% if authenticated %}d-none{% endif %}">
                 <div class="card shadow border-0 overflow-hidden rounded-4" style="width: 600px; min-height: 420px; display: flex; flex-direction: column; justify-content: space-between;">
                     <div class="nav d-flex border-bottom" role="tablist">
-                        <button type="button" class="nav-link btn btn-primary active w-50 py-3 rounded-0 fw-bold border-0" id="login-tab" 
+                        <button type="button" class="tab-custom active w-50 py-3 rounded-0 fw-bold border-0" id="login-tab" 
                             data-bs-toggle="tab" data-bs-target="#tabBtnLogin" role="tab" aria-controls="tabBtnLogin" 
                             aria-selected="true">Sign In</button>
-                        <button type="button" class="nav-link btn btn-primary w-50 py-3 rounded-0 fw-bold border-0" id="register-tab" 
+                        <button type="button" class="tab-custom w-50 py-3 rounded-0 fw-bold border-0" id="register-tab" 
                             data-bs-toggle="tab" data-bs-target="#tabBtnRegister" role="tab" aria-controls="tabBtnRegister" 
                             aria-selected="false">Register</button>
                     </div>
@@ -41,7 +41,7 @@
                                             <label for="loginUsername">Username</label>
                                         </div>
                                     </div>
-                                    <div class="input-group mb-5">
+                                    <div class="input-group mb-2">
                                         <span class="input-group-text">
                                             <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" fill="currentColor" class="bi bi-lock" viewBox="0 0 16 16">
                                                 <path fill-rule="evenodd" d="M8 0a4 4 0 0 1 4 4v2.05a2.5 2.5 0 0 1 2 2.45v5a2.5 2.5 0 0 1-2.5 2.5h-7A2.5 2.5 0 0 1 2 13.5v-5a2.5 2.5 0 0 1 2-2.45V4a4 4 0 0 1 4-4M4.5 7A1.5 1.5 0 0 0 3 8.5v5A1.5 1.5 0 0 0 4.5 15h7a1.5 1.5 0 0 0 1.5-1.5v-5A1.5 1.5 0 0 0 11.5 7zM8 1a3 3 0 0 0-3 3v2h6V4a3 3 0 0 0-3-3"/>
@@ -52,7 +52,8 @@
                                             <label for="loginPassword">Password</label>
                                         </div>
                                     </div>
-                                    <button id="loginBtn" class="btn btn-secondary w-100 rounded-5 mb-2" data-url="{{ url_for('auth.sessions') }}">Submit</button>
+                                    <div id="loginError" class="text-danger ps-1 ms-5 mb-5 small"></div>
+                                    <button id="loginBtn" class="btn btn-primary w-100 rounded-5 mb-2" data-url="{{ url_for('auth.sessions') }}">Submit</button>
                                 </form>
                             </div>
                         </div>
@@ -86,7 +87,7 @@
                                             <label for="registerPassword">Password</label>
                                         </div>
                                     </div>
-                                    <div class="input-group mb-5">
+                                    <div class="input-group">
                                         <span class="input-group-text">
                                             <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" fill="currentColor" class="bi bi-lock" viewBox="0 0 16 16">
                                                 <path fill-rule="evenodd" d="M8 0a4 4 0 0 1 4 4v2.05a2.5 2.5 0 0 1 2 2.45v5a2.5 2.5 0 0 1-2.5 2.5h-7A2.5 2.5 0 0 1 2 13.5v-5a2.5 2.5 0 0 1 2-2.45V4a4 4 0 0 1 4-4M4.5 7A1.5 1.5 0 0 0 3 8.5v5A1.5 1.5 0 0 0 4.5 15h7a1.5 1.5 0 0 0 1.5-1.5v-5A1.5 1.5 0 0 0 11.5 7zM8 1a3 3 0 0 0-3 3v2h6V4a3 3 0 0 0-3-3"/>
@@ -97,6 +98,7 @@
                                             <label for="registerConfirm">Confirm password</label>
                                         </div>
                                     </div>
+                                    <div id="registerError" class="text-danger ps-1 ms-5 mb-5 small"></div>
                                     <button id="registerBtn" data-url="{{ url_for('auth.users') }}" class="btn btn-primary w-100 rounded-5 mb-2">Register</button>
                                 </form>
                             </div>
@@ -171,11 +173,11 @@
                                         <input autocomplete="off" type="text" class="form-control" id="createVaultUsername" placeholder="Username">
                                         <label for="createVaultUsername">Username</label>
                                     </div>
-                                    <div class="form-floating mb-2">
+                                    <div class="form-floating">
                                         <input autocomplete="off" type="password" class="form-control" id="createVaultPassword" placeholder="Password">
                                         <label for="createVaultPassword" id="strength-text">Password</label>
                                     </div>
-
+                                    <div id="createVaultError" class="text-danger mb-2 small"></div>
                                     <div class="p-3 border rounded bg-light my-2">
                                         <button type="button" id="staticGenerateBtn" class="btn btn-sm btn-outline-secondary w-100 mb-2">Generate Password</button>
                                         
