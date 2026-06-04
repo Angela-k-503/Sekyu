@@ -10,11 +10,13 @@ from flask_jwt_extended import (
     get_jwt
 )
 from helpers import query, strict_hex_string
+from app import limiter
 
 auth_bp = Blueprint('auth', __name__)
 ph = PasswordHasher()
 
 @auth_bp.route("/users", methods=["POST"])
+@limiter.limit("5 per minute")
 def users():
     user_data = request.get_json()
     username = user_data.get("username")
@@ -39,6 +41,7 @@ def users():
     return response, 201
 
 @auth_bp.route("/sessions", methods=["POST"])
+@limiter.limit("5 per minute")
 def sessions():
     session_data = request.get_json()
     session_username = session_data.get("session_username")
@@ -47,7 +50,6 @@ def sessions():
     if not session_username:
         return {"error": "Missing username or password"}, 400
 
-    # Phase 1: Client requesting salt & wrapped key to calculate master key
     if session_username and not session_hash:         
         user_results = query("SELECT salt, wrapped_dek FROM users WHERE username = ?", session_username)
         if len(user_results) != 1:
@@ -73,6 +75,7 @@ def sessions():
     return {"error": "Invalid request."}, 400
 
 @auth_bp.route("/accounts", methods=["GET", "POST", "PATCH"])
+@limiter.limit("15 per minute")
 @jwt_required()
 def accounts():
     user_id = get_jwt_identity()

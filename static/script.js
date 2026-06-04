@@ -1,7 +1,4 @@
-// Line 1: Use the CDN link for hash-wasm (No downloads required)
 import { argon2id } from 'https://cdn.jsdelivr.net/npm/hash-wasm@4.11.0/+esm';
-
-// Line 2: Point directly to the root static folder file mapping
 import { cryptoSession } from './cryptoSession.js';
 
 // ========================================================
@@ -54,7 +51,6 @@ async function deriveKeysAndTokens(password, customSalt) {
         kek,
     }
 }
-
 
 async function encryptDEK(kek, rawDekBytes) {
     const iv = crypto.getRandomValues(new Uint8Array(12));
@@ -113,6 +109,10 @@ async function decryptDEK(encryptedDekHex, kek, isExtractable = false) {
 }
 
 async function encryptVaultPassword(plainTextPassword, dek) {
+
+    if (!(dek instanceof CryptoKey)) {
+        throw new TypeError("Expected DEK to be a valid CryptoKey object");
+    }
     
     const plainTextBytes = new TextEncoder().encode(plainTextPassword);
 
@@ -123,7 +123,7 @@ async function encryptVaultPassword(plainTextPassword, dek) {
             name: "AES-GCM",
             iv: iv
         },
-        dek, // Your functional DEK CryptoKey object
+        dek, 
         plainTextBytes
     );
 
@@ -133,7 +133,6 @@ async function encryptVaultPassword(plainTextPassword, dek) {
     ciphertext.set(iv, 0);
     ciphertext.set(ciphertextBytes, iv.length);
 
-    // 5. Convert to a standard Hex string to safely transmit via JSON.
     return toHex(ciphertext);
 }
 
@@ -225,7 +224,6 @@ function startSessionCountdown(durationInMinutes) {
             }
         }
 
-        // 2. Trigger your visual cleanup and UI reset
         handleForcedLogout();
         
     }, durationInMs);
@@ -245,14 +243,12 @@ function handleForcedLogout() {
     document.querySelectorAll('.modal.show').forEach(m => { const inst = bootstrap.Modal.getInstance(m); if (inst) inst.hide(); });
     document.querySelectorAll('.modal-backdrop').forEach(b => b.remove());
 
-    document.getElementById("loginForm").reset();
-    document.getElementById("registerForm").reset();
-    document.getElementById("entryForm").reset();
-    document.getElementById("verifyPasswordForm").reset();
-    document.getElementById("patchPasswordForm").reset();
-    document.getElementById("entry-update-form").reset();
-
-    
+    document.getElementById("loginForm")?.reset();
+    document.getElementById("registerForm")?.reset();
+    document.getElementById("entryForm")?.reset();
+    document.getElementById("verifyPasswordForm")?.reset();
+    document.getElementById("patchPasswordForm")?.reset();
+    document.getElementById("entryUpdateForm")?.reset();
 
     const authSection = document.getElementById('authSection');
     const appDashboard = document.getElementById('appDashboard');
@@ -415,25 +411,20 @@ async function decryptAndPopulateDashboard(entries, clearContainer = true) {
 
 async function initializeAndLoadDashboard(payload) {
     try {
-        // 1. Extract data from the server payload
         const { masterUsername, entries } = payload;
 
-        // 2. Inject the master username into the required DOM elements
         const welcomeSpan = document.querySelector('.display-current-username');
         const profileModalStrong = document.getElementById('modalUsername');
         
         if (welcomeSpan) welcomeSpan.textContent = masterUsername || "User";
         if (profileModalStrong) profileModalStrong.textContent = masterUsername || "Unknown";
 
-        // 3. Handle UI transitions (Hide Auth, Show Dashboard)
         const authSection = document.getElementById('authSection');
         const appDashboard = document.getElementById('appDashboard');
         
         if (authSection) authSection.classList.add('d-none');
         if (appDashboard) appDashboard.classList.remove('d-none');
 
-        // 4. Pass the entries array to your existing population function
-        // (This function already handles the empty state if entries is empty/undefined)
         await decryptAndPopulateDashboard(entries, true);
         
     } catch (error) {
@@ -682,10 +673,23 @@ async function submitUpdateForm(btn, id) {
     const usernameInput = modalContent.querySelector('.field-username').value;
     const passwordInput = modalContent.querySelector('.field-password').value;
 
-    if (!usernameInput.trim()) {
-        alert("Username field cannot be empty.");
+    if (!usernameInput.trim() || !passwordInput.trim()) {
+        alert("Username and password fields cannot be empty.");
         return;
     }
+
+    const activeDEK = cryptoSession.getDEK();
+    if (!activeDEK) {
+            try {
+                // Await pauses processing right here until the modal form resolves successfully
+                activeDEK = await openVerificationModal("Confirm your master password to view this secret.");
+            } catch (modalCancel) {
+                console.warn("View authorization bypassed by user.");
+                return; // Stop processing safely if they click cancel
+            }
+        }
+
+    const encryptedHex = await encryptVaultPassword(passwordInput, activeDEK);
 
     const restUrl = `/entries/${id}`;
 
@@ -695,7 +699,7 @@ async function submitUpdateForm(btn, id) {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
                 new_username: usernameInput,
-                new_ciphertext: passwordInput 
+                new_ciphertext: encryptedHex 
             })
         });
 
@@ -837,7 +841,9 @@ if (registerBtn) {
             if (res.ok) {
                 startSessionCountdown(15);
 
-                cryptoSession.setSession(wrapped_dek);
+                const decryptedDek = await decryptDEK(wrapped_dek, kek);
+
+                cryptoSession.setSession(decryptedDek);
 
                 document.getElementById("registerForm").reset();
                 document.getElementById("registerError").textContent = "";
@@ -906,12 +912,17 @@ if (createVaultBtn) {
             return; 
         }
 
+        if (password.length < 8 || password.length > 32) {
+            document.getElementById('createVaultError').textContent = "Password must be between 4 and 32 characters.";
+            return; 
+        }
+
         try {
             const dek = cryptoSession.getDEK();
             
 
             console.log("DEK:", dek);
-            console.log("Uint8Array?", dek instanceof Uint8Array);
+            console.log("Cryptokey?", dek instanceof CryptoKey);
 
             const ciphertext = await encryptVaultPassword(password, dek);
 
@@ -938,7 +949,6 @@ if (createVaultBtn) {
 
                 const clone = template.content.cloneNode(true);
                 
-                // Set unique IDs using the 'id' (Primary Key) you got from the backend
                 const uniqueModalId = `updateEntryModal_${entry.id}`;
                 const modalContainer = clone.querySelector('.entry-modal-container');
                 const editTriggerBtn = clone.querySelector('.btn-edit-trigger');
@@ -1003,7 +1013,7 @@ if (verifyPwBtn) {
         }
 
         try {
-            // Step A: Reach out to the server dynamically to grab salt & wrapped_dek
+
             let accountRes = await secureFetch(baseUrl, { 
                 method: "GET",
                 headers: { 'Content-Type': 'application/json'}

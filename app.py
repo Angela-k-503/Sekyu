@@ -1,10 +1,12 @@
+import os
 from datetime import timedelta
 from flask import Flask
 from flask_jwt_extended import JWTManager
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
+from werkzeug.middleware.proxy_fix import ProxyFix
 from dotenv import load_dotenv
-
 from helpers import init_db, query, jwt_key
-# Import blueprints
 from routes.auth import auth_bp
 from routes.vault import vault_bp
 
@@ -12,7 +14,8 @@ load_dotenv()
 
 app = Flask(__name__)
 
-# Initialize Database
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1)
+
 init_db()
 
 # JWT Configuration
@@ -40,7 +43,20 @@ def add_cache_headers(response):
         response.headers["Expires"] = "0"
     return response
 
-# Register Blueprints cleanly
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+limiter_db_path = os.path.join(BASE_DIR, "limits.db")
+
+limiter = Limiter(
+    key_func=get_remote_address,
+    app=app,
+    default_limits=["200 per day", "50 per hour"],
+    storage_uri=f"sqlite:///{limiter_db_path}"  
+)
+
+@app.errorhandler(429)
+def ratelimit_handler(e):
+    return {"error": "Too many requests"}, 429
+
 app.register_blueprint(auth_bp, url_prefix='/api/v1/auth')
 app.register_blueprint(vault_bp)
 

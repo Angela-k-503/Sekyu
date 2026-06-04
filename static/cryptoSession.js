@@ -1,9 +1,12 @@
 
 let decryptedDEK = null;
 
-export const cryptoSession = {
-    setSession(dekUint8Array) {
-        decryptedDEK = dekUint8Array;
+export const cryptoSession = Object.freeze({
+    setSession(dekCryptoKey) {
+        if (!(dekCryptoKey instanceof CryptoKey)) {
+            throw new TypeError("cryptoSession expects a CryptoKey");
+        }
+        decryptedDEK = dekCryptoKey;
     },
     getDEK() {
         return decryptedDEK;
@@ -11,5 +14,5 @@ export const cryptoSession = {
     clearSession() {
         decryptedDEK = null;
     }
-};
+});
 
