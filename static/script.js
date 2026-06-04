@@ -694,8 +694,8 @@ async function submitUpdateForm(btn, id) {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-                username: usernameInput,
-                password: passwordInput 
+                new_username: usernameInput,
+                new_ciphertext: passwordInput 
             })
         });
 

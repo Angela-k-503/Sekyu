@@ -8,10 +8,12 @@ def strict_hex_string(val: str, min_len: int = None, max_len: int = None) -> str
         raise ValueError("Input string cannot be empty.")
     if not val.isalnum():
         raise ValueError("Invalid characters detected: only hex digits allowed.")
+    
     try:
         int(val, 16)
     except ValueError:
         raise ValueError("String contains non-hexadecimal characters.")
+    
     if min_len is not None and len(val) < min_len:
         raise ValueError(f"Minimum of {min_len} hex characters not met.")
     if max_len is not None and len(val) > max_len:
