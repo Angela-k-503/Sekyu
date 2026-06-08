@@ -1,5 +1,16 @@
 import os
 import sqlite3
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+limiter_db_path = os.path.join(BASE_DIR, "limits.db")
+
+limiter = Limiter(
+    key_func=get_remote_address,
+    default_limits=["200 per day", "50 per hour"],
+    storage_uri=f"sqlite:///{limiter_db_path}"  
+)
 
 def strict_hex_string(val: str, min_len: int = None, max_len: int = None) -> str:
     if not isinstance(val, str):
@@ -16,17 +27,21 @@ def strict_hex_string(val: str, min_len: int = None, max_len: int = None) -> str
     
     if min_len is not None and len(val) < min_len:
         raise ValueError(f"Minimum of {min_len} hex characters not met.")
+    
     if max_len is not None and len(val) > max_len:
         raise ValueError(f"Maximum of {max_len} hex characters exceeded.")
 
     return val
     
-
-
+# DB config
 def get_db_path():
-    """Dynamically resolves database path to avoid race conditions with load_dotenv()"""
-    return os.getenv("DATABASE_URL", "database.db")
+    db_var = os.getenv("DATABASE_URL", "database.db")
+    if not os.path.isabs(db_var):
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        return os.path.join(base_dir, db_var)   
+    return db_var
 
+# Query shortcut
 def query(sql, *args):
     conn = sqlite3.connect(get_db_path())
     conn.execute("PRAGMA foreign_keys = ON;")
@@ -42,7 +57,7 @@ def query(sql, *args):
         conn.close()
 
 def init_db():       
-    # Create users table (FIXED: Added type definition to wrapped_key and cleaned syntax)
+    # Create users table
     query("""
         CREATE TABLE IF NOT EXISTS users (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -77,10 +92,3 @@ def init_db():
             FOREIGN KEY (user_id) REFERENCES users(id)
         );
     """)
-
-def jwt_key():
-    """Retrieves the JWT secret key safely from the environment."""
-    key = os.getenv("JWT_SECRET_KEY")
-    if not key:
-        raise ValueError("No JWT_SECRET_KEY found in environment. Did you forget your .env file?")
-    return key
