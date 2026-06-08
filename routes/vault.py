@@ -1,10 +1,9 @@
 from flask import Blueprint, request, render_template, make_response
 from flask_jwt_extended import jwt_required, get_jwt_identity, verify_jwt_in_request, unset_jwt_cookies
-from helpers import query, get_db_path, strict_hex_string
+from helpers import query, get_db_path, strict_hex_string, limiter
 from jwt.exceptions import ExpiredSignatureError
 from flask_jwt_extended.exceptions import NoAuthorizationError, InvalidHeaderError
 import sqlite3
-from app import limiter
 
 vault_bp = Blueprint('vault', __name__)
 
@@ -91,33 +90,36 @@ def entries():
             return {"status": "error", "message": str(e)}, 500
     
     
-@vault_bp.route("/entries/<int:id>", methods=["PUT", "DELETE"])
-@limiter.limit("5 per minute")
+@vault_bp.route("/entries/<int:id>", methods=["PATCH", "DELETE"])
+@limiter.limit("10 per minute")
 @jwt_required()
 def entry_operations(id):
     user_id = get_jwt_identity()
 
-    if request.method == "PUT":
+    if request.method == "PATCH":
         update_data = request.get_json()
         new_username = update_data.get("new_username")
         new_ciphertext = update_data.get("new_ciphertext")
         
         if not new_username or not new_ciphertext:
-            return {"error": "You must provide a username or a password to update", "redirect": "/"}, 400
+            return {"error": "You must provide a username or a password to update"}, 400
 
+        if len(new_username) > 255:
+            return {"error": "Invalid request payload configuration."}, 400
+        
         try:
             strict_hex_string(new_ciphertext, 72, 120)
-        except (ValueError, TypeError) as e:
-            return {"error": str(e)}, 400
+        except (ValueError, TypeError):
+            return {"error": "Invalid request payload configuration."}, 400
     
         try:
             query("UPDATE credentials SET username = ?, ciphertext = ?  WHERE id = ? AND user_id = ?",  new_username, new_ciphertext, id, int(user_id))
-            return {"status": "success", "redirect": "/"}, 200
+            return {"status": "success"}, 200
 
         except Exception as e:
             if "UNIQUE constraint failed" in str(e):
-                return {"error": "An entry with this username already exists for this site.", "redirect": "/"}, 409
-            return {"error": "An internal error occurred while updating your entry.", "redirect": "/"}, 500
+                return {"error": "An entry with this username already exists for this site."}, 409
+            return {"error": "An internal error occurred while updating your entry."}, 500
     
     if request.method == "DELETE":
         user_id = get_jwt_identity()

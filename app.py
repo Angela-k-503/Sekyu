@@ -2,15 +2,17 @@ import os
 from datetime import timedelta
 from flask import Flask
 from flask_jwt_extended import JWTManager
-from flask_limiter import Limiter
-from flask_limiter.util import get_remote_address
 from werkzeug.middleware.proxy_fix import ProxyFix
 from dotenv import load_dotenv
-from helpers import init_db, query, jwt_key
+from helpers import init_db, query
 from routes.auth import auth_bp
 from routes.vault import vault_bp
+from helpers import limiter
 
 load_dotenv()
+
+if not os.getenv("JWT_SECRET_KEY"):
+    raise ValueError("CRITICAL ERROR: 'JWT_SECRET_KEY' is missing from the environment variables (.env file).")
 
 app = Flask(__name__)
 
@@ -20,10 +22,10 @@ init_db()
 
 # JWT Configuration
 app.config["JWT_TOKEN_LOCATION"] = ["cookies"]
-app.config["JWT_COOKIE_SECURE"] = False  # Set to True in production!
+app.config["JWT_COOKIE_SECURE"] = os.getenv("JWT_COOKIE_SECURE", "False").lower() == "true"
 app.config["JWT_COOKIE_CSRF_PROTECT"] = True
 app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(minutes=15)
-app.config["JWT_SECRET_KEY"] = jwt_key()
+app.config["JWT_SECRET_KEY"] = os.getenv("JWT_SECRET_KEY")
 
 jwt = JWTManager(app)
 
@@ -34,7 +36,15 @@ def check_if_token_revoked(jwt_header, jwt_payload):
     return len(row) > 0
 
 @app.after_request
-def add_cache_headers(response):
+def add_security_and_cache_headers(response):
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "script-src 'self' https://cdn.jsdelivr.net 'unsafe-eval'; "
+        "style-src 'self' https://cdn.jsdelivr.net 'unsafe-inline'; "
+        "connect-src 'self' https://cdn.jsdelivr.net; "
+        "img-src 'self' data:; "
+        "object-src 'none';"
+    )
     if response.mimetype in ['text/css', 'application/javascript', 'image/png', 'image/jpeg']:
         response.headers["Cache-Control"] = "public, max-age=86400"
     else:
@@ -42,16 +52,6 @@ def add_cache_headers(response):
         response.headers["Pragma"] = "no-cache"
         response.headers["Expires"] = "0"
     return response
-
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-limiter_db_path = os.path.join(BASE_DIR, "limits.db")
-
-limiter = Limiter(
-    key_func=get_remote_address,
-    app=app,
-    default_limits=["200 per day", "50 per hour"],
-    storage_uri=f"sqlite:///{limiter_db_path}"  
-)
 
 @app.errorhandler(429)
 def ratelimit_handler(e):

@@ -9,8 +9,7 @@ from flask_jwt_extended import (
     get_jwt_identity, 
     get_jwt
 )
-from helpers import query, strict_hex_string
-from app import limiter
+from helpers import query, strict_hex_string, limiter
 
 auth_bp = Blueprint('auth', __name__)
 ph = PasswordHasher()
@@ -26,6 +25,14 @@ def users():
 
     if not (username and user_hash and user_salt and wrapped_dek):
         return {"error": "All fields are required to create an account."}, 400
+    if len(username) > 255:
+            return {"error": "Invalid request payload configuration."}, 400
+    try:
+        strict_hex_string(user_salt, 32, 32)
+        strict_hex_string(user_hash, 64, 64)
+        strict_hex_string(wrapped_dek, None, 120)
+    except (ValueError, TypeError):
+        return {"error": "Invalid request payload configuration."}, 400
     
     pw_hash = ph.hash(user_hash)
 
@@ -36,7 +43,7 @@ def users():
     
     records = query("SELECT * FROM users WHERE username = ?", username)
     token = create_access_token(identity=str(records[0]["id"]))
-    response = jsonify({"status": "success", "redirect": "/"})
+    response = jsonify({"status": "success"})
     set_access_cookies(response, token)
     return response, 201
 
@@ -49,20 +56,28 @@ def sessions():
 
     if not session_username:
         return {"error": "Missing username or password"}, 400
-
-    if session_username and not session_hash:         
+    if session_username and not session_hash:
+        if len(session_username) > 255:
+            return {"error": "Invalid request payload configuration."}, 400
+                 
         user_results = query("SELECT salt, wrapped_dek FROM users WHERE username = ?", session_username)
         if len(user_results) != 1:
             return {"error": "User does not exist! Please register first."}, 404
+        
         user = user_results[0]
         return {"status":"success", "salt": user["salt"], "wrapped_dek": user["wrapped_dek"]}, 200                  
-    
-    # Phase 2: Client submitting hash calculated from master key
     elif session_username and session_hash:
+
+        try:
+            strict_hex_string(session_hash, 64, 64)
+        except (ValueError, TypeError):
+            return {"error": "Invalid request payload configuration."}, 400
+
         result = query("SELECT id, hash FROM users WHERE username = ?", session_username)
         
         if not result:
             return{"error": "Invalid credentials."}, 401
+        
         try:
             ph.verify(result[0]["hash"], session_hash)
             session_token = create_access_token(identity=str(result[0]["id"]))
@@ -71,7 +86,6 @@ def sessions():
             return session_response, 200
         except Exception:
             return {"error": "Failed verification"}, 401
-    
     return {"error": "Invalid request."}, 400
 
 @auth_bp.route("/accounts", methods=["GET", "POST", "PATCH"])
@@ -96,8 +110,8 @@ def accounts():
             return {"error": "Empty field submitted."}, 400
         try:
             strict_hex_string(current_hash, 64, 64)
-        except (ValueError, TypeError) as e:
-            return {"error": str(e)}, 400
+        except (ValueError, TypeError):
+            return {"error": "Invalid request payload configuration."}, 400
 
         auth_data = query("SELECT hash FROM users WHERE id = ?", int(user_id))
         if not auth_data:

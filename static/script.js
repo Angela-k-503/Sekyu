@@ -1,37 +1,42 @@
 import { argon2id } from 'https://cdn.jsdelivr.net/npm/hash-wasm@4.11.0/+esm';
 import { cryptoSession } from './cryptoSession.js';
 
-// ========================================================
-// 1. GLOBAL STATE & LIFECYCLE TRACKERS
-// ========================================================
+// GLOBAL STATE & LIFECYCLE TRACKERS
 let sessionTimeoutId = null;
 let tokenExpirationTime = null;
+let lastCopiedPasswordRef = null;
+let clipboardTimeoutId = null;
 
-// ========================================================
-// 2. DATA TYPE & HEX CONVERSION UTILITIES
-// ========================================================
+// DATA TYPE & HEX CONVERSION UTILITIES
 const toHex = (buf) => Array.from(buf).map(b => b.toString(16).padStart(2, '0')).join('');
 
 const fromHex = hexString => {
-    if (!hexString || typeof hexString !== 'string') {
-        console.error("🚫 fromHex error: Received an invalid or undefined hex string string value!");
-        console.trace();// was removed
+    if (!hexString || typeof hexString !== 'string' || hexString.length % 2 !== 0) {
+        console.error("fromHex error: Invalid hex string.");
         return new Uint8Array(0);
     }
-    return new Uint8Array(hexString.match(/.{1,2}/g).map(byte => parseInt(byte, 16)));
+    const view = new Uint8Array(hexString.length / 2);
+    for (let i = 0; i < view.length; i++) {
+        view[i] = parseInt(hexString.substr(i * 2, 2), 16);
+    }
+    return view;
 };
 
-// ========================================================
-// 3. CORE CRYPTOGRAPHIC PIPELINES
-// ========================================================
+async function hashMatchRef(str) {
+    const msgUint8 = new TextEncoder().encode(str);
+    const hashBuffer = await crypto.subtle.digest('SHA-256', msgUint8);
+    return Array.from(new Uint8Array(hashBuffer)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+// CORE CRYPTOGRAPHIC PIPELINES
 async function deriveKeysAndTokens(password, customSalt) {
     const salt = customSalt ? fromHex(customSalt) : crypto.getRandomValues(new Uint8Array(16));
     
     const rawhash = await argon2id({
         password: password,
         salt: salt,
-        parallelism: 1,
-        iterations: 3,
+        parallelism: 4,
+        iterations: 5,
         memorySize: 65536,
         hashLength: 32,
         outputType: 'binary'
@@ -42,35 +47,36 @@ async function deriveKeysAndTokens(password, customSalt) {
         rawhash,
         "AES-GCM",
         false,
-        ["encrypt", "decrypt"]
+        ["wrapKey", "unwrapKey"]
     );
 
     return {
         saltHex: toHex(salt),
         hashHex: toHex(rawhash),
         kek,
-    }
+    };
 }
 
-async function encryptDEK(kek, rawDekBytes) {
-    const iv = crypto.getRandomValues(new Uint8Array(12));
+async function secureWrapDEK(kek, dekObject) {
+    const wrappingIv = crypto.getRandomValues(new Uint8Array(12));
 
-    // 3. Perform standard AES-GCM encryption
-    const encryptedBuffer = await crypto.subtle.encrypt(
-        { name: "AES-GCM", iv: iv },
+    const wrappedDekBuffer = await crypto.subtle.wrapKey(
+        "raw",
+        dekObject,
         kek,
-        rawDekBytes
+        { 
+            name: "AES-GCM", 
+            iv: wrappingIv 
+        }
     );
 
-    const encryptedBytes = new Uint8Array(encryptedBuffer);
+    const wrappedDekBytes = new Uint8Array(wrappedDekBuffer);
+    const combinedPayload = new Uint8Array(wrappingIv.length + wrappedDekBytes.length);
+    
+    combinedPayload.set(wrappingIv, 0);
+    combinedPayload.set(wrappedDekBytes, wrappingIv.length);
 
-    // 4. Combine IV (12 bytes) + Ciphertext into a single container array
-    const encryptedDek= new Uint8Array(iv.length + encryptedBytes.length);
-    encryptedDek.set(iv, 0);
-    encryptedDek.set(encryptedBytes, iv.length);
-
-    // 5. Convert to a standard hex string for backend storage
-    return toHex(encryptedDek);
+    return toHex(combinedPayload);
 }
 
 async function decryptDEK(encryptedDekHex, kek, isExtractable = false) {
@@ -80,49 +86,34 @@ async function decryptDEK(encryptedDekHex, kek, isExtractable = false) {
     const encryptedBytes = encryptedDekBytes.slice(12);
 
     try {
-        const decryptedBuffer = await crypto.subtle.decrypt(
-            { name: "AES-GCM", iv },
-            kek,
-            encryptedBytes
-        );
-
-        const rawDekBytes = new Uint8Array(decryptedBuffer);
-
-        return await crypto.subtle.importKey(
+        const importedKey = await crypto.subtle.unwrapKey(
             "raw",
-            rawDekBytes,
+            encryptedBytes,
+            kek,
+            { name: "AES-GCM", iv },
             "AES-GCM",
-            isExtractable, 
+            isExtractable,
             ["encrypt", "decrypt"]
         );
 
-    } catch (err) {
-        console.error(
-            "Decryption failed. Invalid key or compromised ciphertext tag.",
-            err
-        );
+        return importedKey;
 
-        throw new Error(
-            "Integrity check failed: Decryption rejected."
-        );
+    } catch (err) {
+        console.error("DEK Unwrapping failed. Invalid key or compromised ciphertext tag.", err);
+        throw new Error("Integrity check failed: Unwrapping rejected.");
     }
 }
 
 async function encryptVaultPassword(plainTextPassword, dek) {
-
     if (!(dek instanceof CryptoKey)) {
         throw new TypeError("Expected DEK to be a valid CryptoKey object");
     }
     
     const plainTextBytes = new TextEncoder().encode(plainTextPassword);
-
     const iv = crypto.getRandomValues(new Uint8Array(12));
 
     const encryptedBuffer = await crypto.subtle.encrypt(
-        {
-            name: "AES-GCM",
-            iv: iv
-        },
+        { name: "AES-GCM", iv: iv },
         dek, 
         plainTextBytes
     );
@@ -137,7 +128,6 @@ async function encryptVaultPassword(plainTextPassword, dek) {
 }
 
 async function decryptVaultPassword(dek, ciphertextHex) {
-
     const ciphertextBytes = fromHex(ciphertextHex);
 
     const iv = ciphertextBytes.slice(0, 12);
@@ -153,33 +143,20 @@ async function decryptVaultPassword(dek, ciphertextHex) {
         return new Uint8Array(decryptedBuffer);
 
     } catch (err) {
-        console.error(
-            "Decryption failed. Invalid key or compromised ciphertext tag.1",
-            err
-        );
-
-        throw new Error(
-            "Integrity check failed: Decryption rejected."
-        );
+        console.error("Decryption failed. Invalid key or compromised ciphertext tag.1", err);
+        throw new Error("Integrity check failed: Decryption rejected.");
     }
 }
 
-// ========================================================
-// 4. NETWORK BOUNDARY & ROUTING INTERCEPTORS
-// ========================================================
+
+// NETWORK BOUNDARY & ROUTING INTERCEPTORS
 async function secureFetch(url, options = {}) {
-
-    if (tokenExpirationTime &&
-        Date.now() >= tokenExpirationTime) {
-
-        handleForcedLogout();
+    if (tokenExpirationTime && Date.now() >= tokenExpirationTime) {
+        await handleForcedLogout();
         throw new Error("Session expired client-side");
     }
 
-    const headers = {
-        ...(options.headers || {})
-    };
-
+    const headers = { ...(options.headers || {}) };
     const csrfToken = getCookie('csrf_access_token');
     if (csrfToken) {
         headers['X-CSRF-Token'] = csrfToken;
@@ -192,19 +169,22 @@ async function secureFetch(url, options = {}) {
     });
 
     if (response.status === 401) {
-        handleForcedLogout();
+        await handleForcedLogout();
         throw new Error("Unauthorized");
     }
 
     return response;
 }
 
-// ========================================================
-// 5. UNIFIED TERMINATION & SESSION CLEANUP
-// ========================================================
+// UNIFIED TERMINATION & SESSION CLEANUP
 function startSessionCountdown(durationInMinutes) {
     const durationInMs = durationInMinutes * 60 * 1000;
-    tokenExpirationTime = Date.now() + durationInMs;
+    const absoluteExpiryTime = Date.now() + durationInMs;
+
+    // Persist timestamp state across client-side memory reloads
+    sessionStorage.setItem('tokenExpirationTime', absoluteExpiryTime);
+    tokenExpirationTime = absoluteExpiryTime;
+
     if (sessionTimeoutId) clearTimeout(sessionTimeoutId);
     
     sessionTimeoutId = setTimeout(async () => {
@@ -224,21 +204,35 @@ function startSessionCountdown(durationInMinutes) {
             }
         }
 
-        handleForcedLogout();
+        await handleForcedLogout();
         
     }, durationInMs);
 }
 
-function handleForcedLogout() {
+async function handleForcedLogout() {
+
     cryptoSession.clearSession();
+    sessionStorage.removeItem('tokenExpirationTime');
     tokenExpirationTime = null;
+
     if (sessionTimeoutId) {
         clearTimeout(sessionTimeoutId);
         sessionTimeoutId = null;
     }
 
     const container = document.getElementById('vaultEntriesContainer');
-    if (container) container.innerHTML = '<div class="mb-3 no-entries-placeholder"><p>No saved login credentials yet.</p></div>';
+    if (container) {
+        container.textContent = ''; 
+        
+        const placeholderDiv = document.createElement('div');
+        placeholderDiv.className = 'mb-3 no-entries-placeholder';
+        
+        const textPara = document.createElement('p');
+        textPara.textContent = 'No saved login credentials yet.';
+        
+        placeholderDiv.appendChild(textPara);
+        container.appendChild(placeholderDiv);
+    }
 
     document.querySelectorAll('.modal.show').forEach(m => { const inst = bootstrap.Modal.getInstance(m); if (inst) inst.hide(); });
     document.querySelectorAll('.modal-backdrop').forEach(b => b.remove());
@@ -256,9 +250,7 @@ function handleForcedLogout() {
     if (appDashboard) appDashboard.classList.add('d-none');
 }
 
-// ========================================================
-// 6. PASSWORD STRENGTH & GENERATION ENGINES
-// ========================================================
+// PASSWORD STRENGTH & GENERATION ENGINES
 function runSecureGenerator(length, includeSpecials) {
     const alphas = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
     const numbers = "0123456789";
@@ -268,11 +260,18 @@ function runSecureGenerator(length, includeSpecials) {
     if (includeSpecials) pool += specials;
 
     let password = "";
-    const randValues = new Uint32Array(length);
-    window.crypto.getRandomValues(randValues);
-
-    for (let i = 0; i < length; i++) {
-        password += pool.charAt(randValues[i] % pool.length);
+    const maxValidByte = Math.floor(256 / pool.length) * pool.length;
+    
+    // Process character selection byte-by-byte safely
+    while (password.length < length) {
+        const randBytes = new Uint8Array(1);
+        window.crypto.getRandomValues(randBytes);
+        const val = randBytes[0];
+        
+        // Rejection sampling removes modulo bias
+        if (val < maxValidByte) {
+            password += pool.charAt(val % pool.length);
+        }
     }
     return password;
 }
@@ -308,6 +307,13 @@ function initializePasswordGenerator(elements) {
     });
 
     generateBtn.addEventListener('click', () => {
+        const currentPassword = passwordInput.value || "";
+
+        if (currentPassword.trim().length > 0) {
+            const confirmOverwrite = confirm("Are you sure? This will overwrite the password you already entered.");
+            if (!confirmOverwrite) return; 
+        }
+
         const length = parseInt(box.value, 10) || 16;
         const includeSpecials = specialsCheckbox ? specialsCheckbox.checked : true;
         
@@ -318,12 +324,19 @@ function initializePasswordGenerator(elements) {
     });
 }
 
-function checkStrength(pw) {
-    const strengthText = document.getElementById('strength-text');
+function checkStrength(inputElement) {
+    if (!inputElement) return;
+
+    const parentContainer = inputElement.parentElement;
+    if (!parentContainer) return;
+
+    const strengthText = parentContainer.querySelector('.strength-text');
     if (!strengthText) return;
 
-    if (!pw) {
-        strengthText.innerText = "Password";
+    const pw = inputElement.value;
+
+    if (!pw || !pw.trim()) {
+        strengthText.innerText = ""; 
         return;
     }
 
@@ -333,35 +346,45 @@ function checkStrength(pw) {
     if (/[0-9]/.test(pw)) score++;
     if (/[^A-Za-z0-9]/.test(pw)) score++;
 
-    if (score <= 1) strengthText.innerText = "Strength: Weak";
-    else if (score === 2) strengthText.innerText = "Strength: Medium";
-    else if (score >= 3) strengthText.innerText = "Strength: Strong";
+    if (score <= 1) {
+        strengthText.innerText = "(weak)";
+        strengthText.className = "strength-text ms-1 fw-bold text-danger";
+    } else if (score === 2) {
+        strengthText.innerText = "(medium)";
+        strengthText.className = "strength-text ms-1 fw-bold text-warning";
+    } else if (score >= 3) {
+        strengthText.innerText = "(strong)";
+        strengthText.className = "strength-text ms-1 fw-bold text-success";
+    }
 }
 
-// ========================================================
-// 7. VAULT DISPLAY AND PRESENTATION LAYER
-// ========================================================
+// VAULT DISPLAY AND PRESENTATION LAYER
 async function decryptAndPopulateDashboard(entries, clearContainer = true) {
-    
-    console.log("decryptAndPopulateDashboard called");
-    console.log("entries:", entries);
-    console.log("entries type:", typeof entries);
-    console.log("Is Array?", Array.isArray(entries));
-    console.log("Length:", entries?.length);
-
     const container = document.getElementById('vaultEntriesContainer');
     const template = document.getElementById('entryTemplate');
     if (!container || !template) return;
 
     if (clearContainer) {
-        container.innerHTML = '';
+        while (container.firstChild) {
+            container.removeChild(container.firstChild);
+        }
     } else {
         const placeholder = container.querySelector('.no-entries-placeholder');
         if (placeholder) placeholder.remove();
     }
 
     if (!entries || entries.length === 0) {
-        container.innerHTML = '<div class="mb-3 no-entries-placeholder"><p>No saved login credentials yet.</p></div>';
+        container.textContent = '';
+
+        const placeholderDiv = document.createElement('div');
+        placeholderDiv.className = 'mb-3 no-entries-placeholder';
+        
+        const textPara = document.createElement('p');
+        textPara.className = 'text-muted m-0';
+        textPara.textContent = 'No saved login credentials yet.';
+        
+        placeholderDiv.appendChild(textPara);
+        container.appendChild(placeholderDiv);
         return;
     }
 
@@ -380,20 +403,12 @@ async function decryptAndPopulateDashboard(entries, clearContainer = true) {
         clone.querySelector('.entry-website').textContent = entry.website;
         clone.querySelector('.entry-username').textContent = entry.username;
         clone.querySelector('.entry-website-title-span').textContent = entry.website;
-        clone.querySelector('.field-username').value = entry.username;
 
         const passwordDisplay = clone.querySelector('.entry-password-display');
         passwordDisplay.setAttribute('data-ciphertext', entry.ciphertext);
 
-        const deleteBtn = clone.querySelector('.btn-delete-action');
-        if (deleteBtn) {
-            deleteBtn.setAttribute('onclick', `deleteEntry(this, '${entry.id}')`);
-        }
-
-        const saveModalBtn = clone.querySelector('.btn-save-modal-action');
-        if (saveModalBtn) {
-            saveModalBtn.setAttribute('onclick', `submitUpdateForm(this, '${entry.id}')`);
-        }
+        clone.querySelector('.btn-delete-action')?.setAttribute('data-entry-id', entry.id);
+        clone.querySelector('.btn-save-modal-action')?.setAttribute('data-entry-id', entry.id);
 
         initializePasswordGenerator({
             slider: clone.querySelector('.template-slider'),
@@ -409,6 +424,7 @@ async function decryptAndPopulateDashboard(entries, clearContainer = true) {
     });
 }
 
+// HANDLE TRANSITION FROM AUTH UI TO VAULT UI
 async function initializeAndLoadDashboard(payload) {
     try {
         const { masterUsername, entries } = payload;
@@ -432,29 +448,25 @@ async function initializeAndLoadDashboard(payload) {
     }
 }
 
+// FORCE RE-AUTHENTICATION
 async function openVerificationModal(reasonText = "Authentication required.") {
     return new Promise((resolve, reject) => {
-        // Track resolution state for the close event
         let wasResolved = false; 
 
-        // 1. Update the UI message dynamically
-        const reasonEl = document.getElementById('verifyReasonText');
+        const reasonEl = document.getElementById('globalVerifyReasonText');
         if (reasonEl) reasonEl.textContent = reasonText;
 
-        const modalEl = document.getElementById('verifyPasswordModal');
-        const verifyForm = document.getElementById('verifyPasswordForm');
-        const passwordInput = document.getElementById('currentPassword');
-        const errorEl = document.getElementById('verifyError');
+        const modalEl = document.getElementById('globalVerifyModal');
+        const verifyForm = document.getElementById('globalVerifyForm');
+        const passwordInput = document.getElementById('globalCurrentPassword');
+        const errorEl = document.getElementById('globalVerifyError');
 
-        // Clear any old values or errors
         if (errorEl) errorEl.textContent = "";
         if (passwordInput) passwordInput.value = "";
 
-        // Show the Bootstrap Modal programmatically
         const bootstrapModal = new bootstrap.Modal(modalEl);
         bootstrapModal.show();
 
-        // 2. Define the ONE-TIME async submit handler
         async function handleSubmit(e) {
             e.preventDefault();
             if (errorEl) errorEl.textContent = "";
@@ -462,35 +474,37 @@ async function openVerificationModal(reasonText = "Authentication required.") {
             const masterPassword = passwordInput?.value || "";
 
             if (!masterPassword.trim()) {
-                errorEl.textContent = "Password field cannot be empty.";
+                if (errorEl) errorEl.textContent = "Password field cannot be empty.";
                 return;
             }
 
             try {
-                // Step A: Reach out to the server dynamically to grab salt & wrapped_dek
-                const accountRes = await secureFetch('/accounts', { 
+
+                const targetUrl = document.getElementById('globalVerifySubmitBtn')?.getAttribute('data-url');
+                if (!targetUrl) {
+                    if (errorEl) errorEl.textContent = "Session configuration lost. Please refresh the page.";
+                    console.error("DOM Routing Error: Verification modal form action endpoint is missing or undefined.");
+                    return;
+                }
+
+                const accountRes = await secureFetch(targetUrl, { 
                     method: "GET", 
                     headers: { 'Content-Type': 'application/json' }
                 });
 
                 const payload = await accountRes.json();
-                if (!accountRes.ok) errorEl.textContent = payload.error;
+                if (!accountRes.ok) errorEl.textContent = payload.error || "Failed to locate account attributes.";
 
                 const { kek } = await deriveKeysAndTokens(masterPassword, payload.salt);
-                
-                // Step C: Attempt local DEK decryption
                 const activeDEK = await decryptDEK(payload.wrapped_dek, kek);
 
-                // SUCCESS STATE 🎉
                 cryptoSession.setSession(activeDEK);
                 passwordInput.value = "";
                 errorEl.textContent = "";
                 
-                // Set flag and clean up event listeners
                 wasResolved = true;
                 verifyForm.removeEventListener('submit', handleSubmit);
                 
-                // Hide the visual frame and RESOLVE the promise with the key!
                 bootstrapModal.hide();
                 resolve(activeDEK);
 
@@ -501,10 +515,8 @@ async function openVerificationModal(reasonText = "Authentication required.") {
             }
         }
 
-        // Bind the form submission
         verifyForm.addEventListener('submit', handleSubmit);
 
-        // Cleanup if they manually click close/cancel
         modalEl.addEventListener('hidden.bs.modal', () => {
             verifyForm.removeEventListener('submit', handleSubmit);
             if (!wasResolved) {
@@ -514,11 +526,7 @@ async function openVerificationModal(reasonText = "Authentication required.") {
     });
 }
 
-// ========================================================
-// 8. REST VAULT ENTRIES: CORE ACTIONS (Shared globally via window)
-// ========================================================
 async function togglePasswordVisibility(btn) {
-    // 1. Correctly locate the outer card wrapper based on your HTML class
     const vaultCard = btn.closest('.vault-entry-card');
     if (!vaultCard) return;
 
@@ -526,7 +534,6 @@ async function togglePasswordVisibility(btn) {
     const icon = btn.querySelector('svg');
     if (!passwordDisplay || !icon) return; 
 
-    // Pre-defined SVG icons matching your styling rules
     const eyeIconHtml = `
         <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
         <circle cx="12" cy="12" r="3"></circle>
@@ -536,19 +543,16 @@ async function togglePasswordVisibility(btn) {
         <line x1="1" y1="1" x2="23" y2="23"></line>
     `;
 
-    // MODE A: Reveal the hidden password
-    if (passwordDisplay.textContent === "••••••••••••") {
-        
-        // Step 1: Securely reset all other open passwords across the entire screen
+    if (passwordDisplay.type === "password") {
         document.querySelectorAll('.entry-password-display').forEach(el => {
-            if (el.textContent !== "••••••••••••") {
-                el.textContent = "••••••••••••";
-                
-                // Jump to the sibling container to locate the precise companion button
+            if (el.type !== "password") {
+                el.value = "";
+                el.value = "••••••••••••";
+                el.type = "password";
+
                 const associatedCard = el.closest('.vault-entry-card');
                 if (associatedCard) {
-                    // Find the toggle button using its relative attribute location
-                    const companionBtn = associatedCard.querySelector('button[onclick="togglePasswordVisibility(this)"]');
+                    const companionBtn = associatedCard.querySelector('.action-toggle-visibility');
                     if (companionBtn) {
                         const companionIcon = companionBtn.querySelector('svg');
                         if (companionIcon) companionIcon.innerHTML = eyeIconHtml;
@@ -557,44 +561,47 @@ async function togglePasswordVisibility(btn) {
             }
         });
 
-        // Step 2: Extract encrypted value
         const ciphertext = passwordDisplay.getAttribute('data-ciphertext');
         let activeDEK = cryptoSession.getDEK(); 
 
-        // Step 3: Handle authorization drops
         if (!activeDEK) {
             try {
-                // Await pauses processing right here until the modal form resolves successfully
                 activeDEK = await openVerificationModal("Confirm your master password to view this secret.");
             } catch (modalCancel) {
                 console.warn("View authorization bypassed by user.");
-                return; // Stop processing safely if they click cancel
+                return;
             }
         }
 
-        // Step 4: Run the decryption engine
+        let plainBuffer;
         try {
-            const plainBuffer = await decryptVaultPassword(activeDEK, ciphertext); 
-            const plainPassword = new TextDecoder().decode(plainBuffer);
-            
-            passwordDisplay.textContent = plainPassword;
+            plainBuffer = await decryptVaultPassword(activeDEK, ciphertext); 
+            passwordDisplay.value = new TextDecoder().decode(plainBuffer);
+            passwordDisplay.type = "text";
             icon.innerHTML = eyeOffIconHtml;
+            
         } catch (err) {
             console.error("Decryption error:", err);
             alert("Failed to decrypt password.");
+        } finally {
+            if (plainBuffer) {
+                plainBuffer.fill(0);
+            }
         }
 
-    // MODE B: Mask the visible password
     } else {
-        passwordDisplay.textContent = "••••••••••••";
+        passwordDisplay.value = "";
+        passwordDisplay.value = "••••••••••••";
+        passwordDisplay.type = "password";
         icon.innerHTML = eyeIconHtml;
     }
 }
 
 async function copyToClipboard(btn) {
-    const container = btn.parentElement;
-    const passwordDisplay = container.querySelector('.entry-password-display');
-    
+    const vaultCard = btn.closest('.vault-entry-card');
+    if (!vaultCard) return;
+
+    const passwordDisplay = vaultCard.querySelector('.entry-password-display');
     if (!passwordDisplay) return;
 
     const ciphertext = passwordDisplay.getAttribute('data-ciphertext');
@@ -602,36 +609,48 @@ async function copyToClipboard(btn) {
 
     if (!activeDEK) {
         try {
-            // Await pauses processing right here until the modal form resolves successfully
             activeDEK = await openVerificationModal("Confirm your master password to view this secret.");
         } catch (modalCancel) {
             console.warn("View authorization bypassed by user.");
-            return; // Stop processing safely if they click cancel
+            return;
         }
     }
 
+    let plainBuffer;
+    const originalHTML = btn.innerHTML;
+
     try {
-        // FIX: Replaced non-existent yourDecryptFunction with correct decryption operation
-        const plainBuffer = await decryptVaultPassword(activeDEK, ciphertext);
+
+        plainBuffer = await decryptVaultPassword(activeDEK, ciphertext);
         const plainPassword = new TextDecoder().decode(plainBuffer);
         
         await navigator.clipboard.writeText(plainPassword);
-        
-        const originalHTML = btn.innerHTML;
+
+        btn.setAttribute('title', 'Copied!');
         btn.innerHTML = `
-            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-check" viewBox="0 0 16 16">
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-check text-success" viewBox="0 0 16 16">
                 <path d="M10.97 4.97a.75.75 0 0 1 1.07 1.05l-3.99 4.99a.75.75 0 0 1-1.08.02L4.324 8.384a.75.75 0 1 1 1.06-1.06l2.094 2.093 3.473-4.425z"/>
             </svg>
         `;
-        
+
         setTimeout(() => {
-            btn.innerHTML = originalHTML;
+            if (btn && document.body.contains(btn)) {
+                btn.innerHTML = originalHTML;
+                btn.setAttribute('title', 'Copy Password');
+            }
         }, 2000);
+
     } catch (err) {
         console.error("Clipboard copy operation failure:", err);
+        alert("Failed to copy password securely.");
+    } finally {
+        if (plainBuffer) {
+            plainBuffer.fill(0);
+        }
     }
 }
 
+// DELETE EXISTING VAULT ENTRY BY ID
 async function deleteEntry(btn, id) {
     if (!confirm("Are you sure you want to delete this vault entry?")) return;
 
@@ -644,12 +663,20 @@ async function deleteEntry(btn, id) {
         if (res.status === 204) {
             if (entryCard) {
                 entryCard.remove();
-                console.log(`[Vault] Entry #${id} cleanly deleted from layout context.`);
             }
 
             const container = document.getElementById('vaultEntriesContainer');
             if (container && container.children.length === 0) {
-                container.innerHTML = '<div class="mb-3"><p>No saved login credentials yet.</p></div>';
+                container.textContent = '';
+                const placeholderDiv = document.createElement('div');
+                placeholderDiv.className = 'mb-3 no-entries-placeholder';
+                
+                const textPara = document.createElement('p');
+                textPara.className = 'text-muted m-0';
+                textPara.textContent = 'No saved login credentials yet.';
+                
+                placeholderDiv.appendChild(textPara);
+                container.appendChild(placeholderDiv);
             }
             return;
         }
@@ -662,64 +689,134 @@ async function deleteEntry(btn, id) {
     }
 }
 
+// UPDATE EXISTING VAULT ENTRY BY ID
 async function submitUpdateForm(btn, id) {
     const modalContent = btn.closest('.modal-content');
-    const usernameInput = modalContent.querySelector('.field-username').value;
-    const passwordInput = modalContent.querySelector('.field-password').value;
+    if (!modalContent) return;
 
-    if (!usernameInput.trim() || !passwordInput.trim()) {
-        alert("Username and password fields cannot be empty.");
+    const fieldError = modalContent.querySelector('.field-error');
+    if (fieldError) fieldError.textContent = "";
+
+    // Target checkboxes
+    const shouldUpdateUser = modalContent.querySelector('.toggle-update-username')?.checked;
+    const shouldUpdatePass = modalContent.querySelector('.toggle-update-password')?.checked;
+
+    if (!shouldUpdateUser && !shouldUpdatePass) {
+        if (fieldError) fieldError.textContent = "Please select at least one option to update.";
         return;
     }
 
-    const activeDEK = cryptoSession.getDEK();
-    if (!activeDEK) {
+    const usernameField = modalContent.querySelector('.field-username');
+    const passwordField = modalContent.querySelector('.field-password');
+
+    let requestBody = {};
+    let usernameInput = "";
+    let encryptedHex = "";
+
+    if (shouldUpdateUser) {
+        usernameInput = usernameField.value.trim();
+        if (!usernameInput) {
+            if (fieldError) fieldError.textContent = "Username field cannot be empty.";
+            return;
+        }
+        if (username.length > 255) {
+            if (fieldError) fieldError.textContent = "Username cannot be longer than 255 characters.";
+            return;
+        }
+        requestBody.new_username = usernameInput;
+    }
+
+    if (shouldUpdatePass) {
+        const passwordInput = passwordField.value;
+        if (!passwordInput || !passwordInput.trim() || passwordInput.length < 8) {
+            if (fieldError) fieldError.textContent = "Password must be at least 8 characters long.";
+            return;
+        }
+
+        let activeDEK = cryptoSession.getDEK();
+        if (!activeDEK) {
             try {
-                // Await pauses processing right here until the modal form resolves successfully
-                activeDEK = await openVerificationModal("Confirm your master password to view this secret.");
+                activeDEK = await openVerificationModal("Confirm your master password to save changes.");
             } catch (modalCancel) {
-                console.warn("View authorization bypassed by user.");
-                return; // Stop processing safely if they click cancel
+                console.warn("Update authorization bypassed by user.");
+                return;
             }
         }
 
-    const encryptedHex = await encryptVaultPassword(passwordInput, activeDEK);
-
-    const restUrl = `/entries/${id}`;
+        encryptedHex = await encryptVaultPassword(passwordInput, activeDEK);
+        passwordField.value = ""; // Sanitize raw field instantly
+        requestBody.new_ciphertext = encryptedHex;
+    }
 
     try {
+        if (btn) btn.disabled = true;
+
+        const restUrl = `/entries/${id}`;
         const response = await secureFetch(restUrl, {
-            method: "PUT",
+            method: "PATCH",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                new_username: usernameInput,
-                new_ciphertext: encryptedHex 
-            })
+            body: JSON.stringify(requestBody)
         });
 
         if (response.ok) {
             alert("Entry successfully updated!");
+
+            if (fieldError) fieldError.textContent = ""; 
+            usernameField.value = "";
+            passwordField.value = "";
+            
+            const uCheck = modalContent.querySelector('.toggle-update-username');
+            const pCheck = modalContent.querySelector('.toggle-update-password');
+            if (uCheck) { uCheck.checked = false; usernameField.disabled = true; }
+            if (pCheck) { 
+                pCheck.checked = false; 
+                passwordField.disabled = true;
+                const genWrapper = modalContent.querySelector('.template-generator-wrapper');
+                if (genWrapper) { genWrapper.style.opacity = "0.5"; genWrapper.style.pointerEvents = "none"; }
+            }
+
             const openModalElement = btn.closest('.modal');
             const modalInstance = bootstrap.Modal.getInstance(openModalElement);
             if (modalInstance) modalInstance.hide();
+
+            const actionDeleteBtn = document.querySelector(`.btn-delete-action[data-entry-id="${id}"]`);
+            const entryCard = actionDeleteBtn ? actionDeleteBtn.closest('.vault-entry-card') : null;
+            if (entryCard) {
+                if (shouldUpdateUser) {
+                    const userDisplay = entryCard.querySelector('.entry-username');
+                    if (userDisplay) userDisplay.textContent = usernameInput;
+                    
+                    const internalUserField = entryCard.querySelector('.field-username');
+                    if (internalUserField) internalUserField.value = usernameInput;
+                }
+                
+                if (shouldUpdatePass) {
+                    const passwordDisplay = entryCard.querySelector('.entry-password-display');
+                    if (passwordDisplay) {
+                        passwordDisplay.setAttribute('data-ciphertext', encryptedHex);
+                        passwordDisplay.value = "••••••••••••";
+                        passwordDisplay.type = "password";
+                    }
+                }
+            }
         } else {
             const errData = await response.json();
-            alert("Update failed: " + (errData.error || "Unknown server error."));
+            if (fieldError) fieldError.textContent = errData.error || "Unknown server error.";
         }
     } catch (err) {
         console.error("Update request processing failed:", err);
         alert("Network error occurred during record modification.");
+    } finally {
+        if (btn) btn.disabled = false;
     }
 }
 
-window.togglePasswordVisibility = togglePasswordVisibility;
-window.copyToClipboard = copyToClipboard;
-window.deleteEntry = deleteEntry;
-window.submitUpdateForm = submitUpdateForm;
+// Helper function to extract a specific cookie's value by its name
+function getCookie(name) { 
+    const match = document.cookie.match(new RegExp('(^| )' + name + '=([^;]+)')); 
+    return match ? match[2] : null; 
+}
 
-// ========================================================
-// 9. INTERACTIVE AUTH FLOW LISTENERS (LOGIN, REG, LOGOUT)
-// ========================================================
 // SIGN IN ACTIONS
 const loginBtn = document.getElementById('loginBtn');
 if (loginBtn) {
@@ -728,16 +825,29 @@ if (loginBtn) {
         e.preventDefault();
         
         const loginUrl = loginBtn.getAttribute('data-url');
-        const username = document.getElementById('loginUsername')?.value || "";
-        const password = document.getElementById('loginPassword')?.value || "";
-
         if (!loginUrl) {
-            loginError.textContent = "An unexpected error occurred. Please refresh the page."
+            loginError.textContent = "An unexpected error occurred. Please refresh the page.";
             return;
         }
 
+        const usernameField = document.getElementById('loginUsername');
+        const passwordField = document.getElementById('loginPassword');
+        if (!usernameField || !passwordField) return;
+
+        const username = usernameField.value || "";
+        const password = passwordField.value || "";
         if (!username.trim() || !password.trim()) {
             loginError.textContent = "Please fill out all fields.";
+            return; 
+        }
+
+        if (username.length > 255) {
+            loginError.textContent = "Username cannot be longer than 255 characters.";
+            return;
+        }
+
+        if (password.length < 8 || password.length > 32) {
+            loginError.textContent = "Password must be between 8 and 32 characters.";
             return; 
         }
 
@@ -757,13 +867,15 @@ if (loginBtn) {
                 return;
             }
 
+            if (passwordField) passwordField.value = "";
+
             const { hashHex, kek } = await deriveKeysAndTokens(password, payload.salt);
             
             let activeDEK;
             try {
                 activeDEK = await decryptDEK(payload.wrapped_dek, kek);
             } catch (dekError) {
-                loginError.textContent = "Invalid username or password."
+                loginError.textContent = "Invalid username or password.";
                 return;
             }
 
@@ -780,17 +892,13 @@ if (loginBtn) {
 
             if (res.ok) {
                 startSessionCountdown(15);
-
                 cryptoSession.setSession(activeDEK);
-
                 loginError.textContent = "";
                 
                 const entriesData = await secureFetch("/entries", { method: "GET" });
-
                 payload = await entriesData.json();
 
                 await initializeAndLoadDashboard(payload);
-                
                 document.getElementById("loginForm")?.reset();
             } else {
                 loginError.textContent = "Login failed: " + payload.error;
@@ -799,8 +907,7 @@ if (loginBtn) {
         } catch (globalError) {
             console.error(globalError);
             alert("A network or system error occurred. Please try again.");
-            window.location.reload();
-        finally {
+        } finally {
             if (loginBtn) loginBtn.disabled = false;
         }
     });
@@ -814,16 +921,31 @@ if (registerBtn) {
         e.preventDefault();
 
         const registerUrl = registerBtn.getAttribute('data-url');
-        const username = document.getElementById('registerUsername')?.value || "";
-        const password = document.getElementById('registerPassword')?.value || "";
-        const conf = document.getElementById('registerConfirm')?.value || "";
         if(!registerUrl) {
             registerError.textContent = "An unexpected error occurred. Please refresh the page.";
             return;
         }
 
+        const usernameField = document.getElementById('registerUsername');
+        const passwordField = document.getElementById('registerPassword');
+        const confField = document.getElementById('registerConfirm');
+        if (!usernameField || !passwordField || !confField) return;
+        
+        const username = usernameField.value || "";
+        const password = passwordField.value || "";
+        const conf = confField.value || "";
         if (!username.trim() || !password.trim() || !conf.trim()) {
             registerError.textContent = "Please fill out all fields.";
+            return; 
+        }
+
+        if (username.length > 255) {
+            registerError.textContent = "Username cannot be longer than 255 characters.";
+            return;
+        }
+
+        if (password.length < 8 || password.length > 32) {
+            registerError.textContent = "Password must be between 8 and 32 characters.";
             return; 
         }
 
@@ -835,9 +957,18 @@ if (registerBtn) {
         try {
             registerBtn.disabled = true;
 
+            if (passwordField) passwordField.value = "";
+            if (confField) confField.value = "";
+
             const { saltHex, hashHex, kek } = await deriveKeysAndTokens(password);
-            const rawDekBytes = crypto.getRandomValues(new Uint8Array(32));
-            const wrapped_dek = await encryptDEK(kek, rawDekBytes);
+
+            const secureDEK = await crypto.subtle.generateKey(
+                { name: "AES-GCM", length: 256 },
+                true,
+                ["encrypt", "decrypt"]
+            );
+
+            const wrapped_dek = await secureWrapDEK(kek, secureDEK);
 
             const res = await fetch(registerUrl, {
                 method: 'POST',
@@ -852,18 +983,13 @@ if (registerBtn) {
 
             if (res.ok) {
                 startSessionCountdown(15);
-
-                const activeDEK = await decryptDEK(wrapped_dek, kek);
-
-                cryptoSession.setSession(activeDEK);
-
+                cryptoSession.setSession(secureDEK);
                 registerError.textContent = "";
 
                 const entriesData = await secureFetch("/entries", { method: "GET" });
                 const payload = await entriesData.json();
 
                 await initializeAndLoadDashboard(payload);
-
                 document.getElementById("registerForm")?.reset();
             } else {
                 const payload = await res.json();
@@ -873,8 +999,7 @@ if (registerBtn) {
         } catch (globalError) {
             console.error("Registration pipeline error:", globalError);
             alert("A network or system error occurred. Please try again.");
-            window.location.reload();
-        }finally {
+        } finally {
             if (registerBtn) registerBtn.disabled = false;
         }
     });
@@ -885,7 +1010,6 @@ const logOutBtn = document.getElementById('logOutBtn');
 if (logOutBtn) {
     logOutBtn.addEventListener('click', async (e) => {
         e.preventDefault();
-
         const logOutUrl = logOutBtn.getAttribute('data-url');
         
         if (logOutUrl) {
@@ -904,7 +1028,7 @@ if (logOutBtn) {
                 console.error("Network error during logout notice:", err);
             }
         }
-        handleForcedLogout(); 
+        await handleForcedLogout(); 
     });
 }
 
@@ -930,24 +1054,28 @@ if (createVaultBtn) {
             return; 
         }
 
-        if (password.length < 8 || password.length > 32) {
-            document.getElementById('createVaultError').textContent = "Password must be between 4 and 32 characters.";
-            return; 
+        if (website.length > 2048) {
+            createVaultError.textContent = "Website URL cannot be longer than 2048 characters.";
+            return;
+        }
+
+        if (username.length > 255) {
+            createVaultError.textContent = "Username cannot be longer than 255 characters.";
+            return;
         }
 
         if (password.length < 8 || password.length > 32) {
-            document.getElementById('createVaultError').textContent = "Password must be between 4 and 32 characters.";
+            createVaultError.textContent = "Password must be between 8 and 32 characters.";
             return; 
         }
 
         try {
             createVaultBtn.disabled = true;
-
             let dek = cryptoSession.getDEK();
 
             if (!dek) {
                 try {
-                    dek = await openVerificationModal("Unable to save. Refreshing the page locked your secure data container. Please log in again to re-authenticate and save your data.")
+                    dek = await openVerificationModal("Unable to save. Refreshing the page locked your secure data container. Please log in again to re-authenticate and save your data.");
                 } catch (modalCancel) {
                     console.warn("View authorization bypassed by user.");
                     throw new Error("Authorization cancelled by user."); 
@@ -967,9 +1095,7 @@ if (createVaultBtn) {
             });
 
             if (res.ok) {
-
                 const entry = await res.json();
-
                 const container = document.getElementById('vaultEntriesContainer');
                 const template = document.getElementById('entryTemplate');
                 if (!container || !template) return;
@@ -978,7 +1104,6 @@ if (createVaultBtn) {
                 if (placeholder) placeholder.remove();
 
                 const clone = template.content.cloneNode(true);
-                
                 const uniqueModalId = `updateEntryModal_${entry.id}`;
                 const modalContainer = clone.querySelector('.entry-modal-container');
                 const editTriggerBtn = clone.querySelector('.btn-edit-trigger');
@@ -989,18 +1114,14 @@ if (createVaultBtn) {
                     modalContainer.setAttribute('data-entry-id', entry.id);
                 }
 
-                // Populate content
                 clone.querySelector('.entry-website').textContent = entry.website;
                 clone.querySelector('.entry-username').textContent = entry.username;
                 clone.querySelector('.entry-website-title-span').textContent = entry.website;
                 clone.querySelector('.field-username').value = entry.username;
-
-                // Set ciphertext
                 clone.querySelector('.entry-password-display').setAttribute('data-ciphertext', entry.ciphertext);
 
-                // Set onclick actions using the primary key
-                clone.querySelector('.btn-delete-action')?.setAttribute('onclick', `deleteEntry(this, '${entry.id}')`);
-                clone.querySelector('.btn-save-modal-action')?.setAttribute('onclick', `submitUpdateForm(this, '${entry.id}')`);
+                clone.querySelector('.btn-delete-action')?.setAttribute('data-entry-id', entry.id);
+                clone.querySelector('.btn-save-modal-action')?.setAttribute('data-entry-id', entry.id);
 
                 initializePasswordGenerator({
                     slider: clone.querySelector('.template-slider'),
@@ -1023,12 +1144,13 @@ if (createVaultBtn) {
             console.error(globalError);
             alert("A network or system error occurred. Please try again.");
         } finally {
-            createVaultBtn.disabled = false;
+            if (createVaultBtn) createVaultBtn.disabled = false;
         }
     });
 }
 
 // PROFILE & ACCOUNT SECURITY SETTINGS
+// Handle Master Password Change Verification
 const verifyPwBtn = document.getElementById('verifyPwBtn');
 if (verifyPwBtn) {
     const baseUrl = verifyPwBtn.getAttribute('data-url');
@@ -1106,6 +1228,7 @@ if (verifyPwBtn) {
     });
 }
 
+// Handle Master Password Change
 const updateNewPwBtn = document.getElementById('updateNewPwBtn');
 if (updateNewPwBtn) {
     const baseUrl = updateNewPwBtn.getAttribute('data-url');
@@ -1127,6 +1250,11 @@ if (updateNewPwBtn) {
         if (!newPwVal.trim() || !newConfVal.trim()) {
             if (patchError) patchError.textContent = "All fields cannot be empty.";
             return;
+        }
+
+        if (newPwVal.length < 8 || newPwVal.length > 32) {
+            patchError.textContent = "Password must be between 8 and 32 characters.";
+            return; 
         }
 
         if (newPwVal !== newConfVal) {
@@ -1156,11 +1284,8 @@ if (updateNewPwBtn) {
                 return;
             }
             
-            const { saltHex, hashHex, kek } = await deriveKeysAndTokens(newPasswordInput.value);
-
-            const rawDekBytes = new Uint8Array(await crypto.subtle.exportKey("raw", activeDEK));
-
-            const wrapped_dek = await encryptDEK(kek, rawDekBytes);
+            const { saltHex, hashHex, kek } = await deriveKeysAndTokens(newPwVal);
+            const wrapped_dek = await secureWrapDEK(kek, activeDEK);
 
             const accountRes = await secureFetch(baseUrl, {
                 method: "PATCH",
@@ -1180,7 +1305,7 @@ if (updateNewPwBtn) {
                 newPasswordInput?.focus();
                 return;
             }
-            patchForm.reset()
+            patchForm.reset();
             if (patchError) patchError.textContent = "";
 
             alert("Master password updated successfully!");
@@ -1197,11 +1322,8 @@ if (updateNewPwBtn) {
 }
 
 
-// ========================================================
-// 9. DOM INITIALIZATION LIFECYCLE HOOKS
-// ========================================================
+// DOM INITIALIZATION LIFECYCLE HOOKS
 document.addEventListener("DOMContentLoaded", async () => {
-
     const clearAuthForms = () => {
         document.getElementById('loginForm')?.reset();
         document.getElementById('registerForm')?.reset();
@@ -1209,6 +1331,55 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     document.getElementById('register-tab')?.addEventListener('click', clearAuthForms);
     document.getElementById('login-tab')?.addEventListener('click', clearAuthForms);
+
+    document.addEventListener('change', (e) => {
+        if (e.target.classList.contains('toggle-update-username')) {
+            const form = e.target.closest('form');
+            const userField = form.querySelector('.field-username');
+            userField.disabled = !e.target.checked;
+            if (userField.disabled) userField.value = "";
+        }
+        
+        if (e.target.classList.contains('toggle-update-password')) {
+            const form = e.target.closest('form');
+            const passField = form.querySelector('.field-password');
+            const genWrapper = form.querySelector('.template-generator-wrapper');
+            const genTrigger = form.querySelector('.template-generate-trigger');
+            const genFieldset = form.querySelector('.template-generator-options');
+
+            passField.disabled = !e.target.checked;
+            if (passField.disabled) passField.value = "";
+            
+            // Toggle Generator Box Visuals & Access
+            if (e.target.checked) {
+                genWrapper.style.opacity = "1";
+                genWrapper.style.pointerEvents = "auto";
+                genTrigger.disabled = false;
+                genFieldset.disabled = false;
+            } else {
+                genWrapper.style.opacity = "0.5";
+                genWrapper.style.pointerEvents = "none";
+                genTrigger.disabled = true;
+                genFieldset.disabled = true;
+            }
+        }
+    });
+
+    // Create Vault Password Strength Listener
+    const createPasswordInput = document.getElementById('createVaultPassword');
+    if (createPasswordInput) {
+        createPasswordInput.addEventListener('input', function() {
+            checkStrength(this);
+        });
+    }
+
+    // Update Form Password Strength Listener
+    const updatePasswordInput = document.querySelector('.entry-update-form .field-password');
+    if (updatePasswordInput) {
+        updatePasswordInput.addEventListener('input', function() {
+            checkStrength(this);
+        });
+    }
     
     initializePasswordGenerator({
         slider: document.getElementById('staticSlider'),
@@ -1220,45 +1391,125 @@ document.addEventListener("DOMContentLoaded", async () => {
         specialsCheckbox: document.getElementById('staticSpecials')
     });
 
+    // Create Vault Cancel Listener
+    const cancelVaultBtn = document.getElementById('cancelCreateVaultBtn');
+
+    if (cancelVaultBtn) {
+        cancelVaultBtn.addEventListener('click', function() {
+            const modal = this.closest('.modal');
+            const form = modal?.querySelector('form');
+            
+            if (form) {
+                form.reset();
+                
+                const strengthBadges = modal.querySelectorAll('.strength-text');
+                strengthBadges.forEach(badge => {
+                    badge.innerText = "";
+                    badge.className = "strength-text ms-1 fw-bold text-lowercase text-muted";
+                });
+            }
+        });
+    }
+
+    // Close modal listener
     document.addEventListener('hidden.bs.modal', (event) => {
         const closingModal = event.target;
         
         const form = closingModal.querySelector('form');
-        
         if (form) {
             form.reset(); 
             form.classList.remove('was-validated');
         }
-        closingModal.querySelectorAll('.text-danger').forEach(errorContainer => {
+
+        closingModal.querySelectorAll('.field-username, .field-password').forEach(input => {
+            input.value = "";
+        });
+
+        closingModal.querySelectorAll('.text-danger, .field-error, #verifyError, #patchError').forEach(errorContainer => {
             errorContainer.textContent = '';
         });
     });
     
-    const registerPwInput = document.getElementById('registerPassword');
-    const createVaultPwInput = document.getElementById('createVaultPassword');
-    
-    if (registerPwInput) {
-        registerPwInput.addEventListener('input', (e) => checkStrength(e.target.value));
-    }
-    if (createVaultPwInput) {
-        createVaultPwInput.addEventListener('input', (e) => checkStrength(e.target.value));
-    }
-
+    // Global Dashboard Action Router
     const appDashboard = document.getElementById('appDashboard');
+
+    if (appDashboard) {
+        appDashboard.addEventListener('click', async (event) => {
+            const toggleBtn = event.target.closest('.action-toggle-visibility');
+
+            // Handle Password Visibility Toggle
+            if (toggleBtn) {
+                event.preventDefault();
+                await togglePasswordVisibility(toggleBtn);
+                return;
+            }
+
+            // Handle Secure Clipboard Operations
+            const copyBtn = event.target.closest('.action-copy');
+            if (copyBtn) {
+                event.preventDefault();
+                await copyToClipboard(copyBtn); 
+                return;
+            }
+
+            // Handle Vault Record Deletion Sequences
+            const deleteBtn = event.target.closest('.btn-delete-action');
+            if (deleteBtn) {
+                event.preventDefault();
+                const entryId = deleteBtn.getAttribute('data-entry-id');
+                if (!entryId) return;
+                await deleteEntry(deleteBtn, entryId);
+                return;
+            }
+
+            // Handle Modal Form Submissions for Entry Modifications
+            const saveBtn = event.target.closest('.btn-save-modal-action');
+            if (saveBtn) {
+                event.preventDefault();
+                const entryId = saveBtn.getAttribute('data-entry-id');
+                await submitUpdateForm(saveBtn, entryId);
+                return;
+            }
+        });
+    }
     
-    // Check if the dashboard is already visible due to Jinja rendering
+    // This acts as a defensive guard  to prevent unauthorized rendering if a local state slips out of sync.
     if (appDashboard && !appDashboard.classList.contains('d-none')) {
+        const savedExpiry = sessionStorage.getItem('tokenExpirationTime');
+        
+        // Safety check: Kick user out if the expiration timestamp is missing completely
+        if (!savedExpiry) {
+            console.warn("Dashboard container is active but expiration token is missing. Forcing logout sequence...");
+            await handleForcedLogout();
+            return;
+        }
+        
+        const remainingTimeInMs = parseInt(savedExpiry, 10) - Date.now();
+
+        // Evaluate token lifecycle relative to absolute dead boundary
+        if (remainingTimeInMs <= 0) {
+            console.warn("Persisted session timer has passed absolute dead boundary.");
+            await handleForcedLogout();
+            return;
+        } else {
+            // Re-sync local timer instance and spin up the visual countdown UI
+            tokenExpirationTime = parseInt(savedExpiry, 10);
+            const remainingMinutes = remainingTimeInMs / (60 * 1000);
+            startSessionCountdown(remainingMinutes);
+        }
+
+        // Hydrate UI panels with secure server-side records
         try {
             const entriesData = await secureFetch("/entries", { method: "GET" });
+            if (!entriesData.ok) {
+                throw new Error(`Server returned network status code: ${entriesData.status}`);
+            }          
             const payload = await entriesData.json();
-            
-            // Re-hydrate everything from the server response
             await initializeAndLoadDashboard(payload);
         } catch (err) {
+            // Fail-secure behavior: Any API fetch failure or tampering triggers an automated wipe
             console.error("Silent sync failure on refresh:", err);
+            await handleForcedLogout();
         }
     }
 });
-
-
-function getCookie(name) { const match = document.cookie.match(new RegExp('(^| )' + name + '=([^;]+)')); return match ? match[2] : null; }
