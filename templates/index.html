@@ -198,8 +198,8 @@
                             </div>
                             <div class="modal-footer">
                                 <div class="button-group w-100 d-flex justify-content-end gap-2">
-                                    <button class="btn btn-secondary" type="button" onclick="clearEntry()">Clear</button>
-                                    <button id="createVaultBtn" class="btn btn-primary" data-url="{{ url_for('vault.entries') }}"   >Save</button>
+                                    <button class="btn btn-secondary" type="button" onclick="this.closest('.modal')?.querySelector('form')?.reset();">Clear</button>
+                                    <button id="createVaultBtn" class="btn btn-primary" data-url="{{ url_for('vault.entries') }}">Save</button>
                                 </div>
                             </div>
                         </div>

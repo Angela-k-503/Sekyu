@@ -432,12 +432,6 @@ async function initializeAndLoadDashboard(payload) {
     }
 }
 
-/**
- * Global/Reusable Verification Gate
- * Pauses execution, prompts for the Master Password, fetches keys, and returns the activeDEK.
- * @param {string} reasonText - The custom message showing why the user needs to authenticate.
- * @returns {Promise<Uint8Array>} - Resolves with the raw decrypted activeDEK upon success.
- */
 async function openVerificationModal(reasonText = "Authentication required.") {
     return new Promise((resolve, reject) => {
         // Track resolution state for the close event
@@ -465,10 +459,10 @@ async function openVerificationModal(reasonText = "Authentication required.") {
             e.preventDefault();
             if (errorEl) errorEl.textContent = "";
 
-            const masterPassword = passwordInput.value;
+            const masterPassword = passwordInput?.value || "";
 
             if (!masterPassword.trim()) {
-                alert("Password field cannot be empty.");
+                errorEl.textContent = "Password field cannot be empty.";
                 return;
             }
 
@@ -478,18 +472,19 @@ async function openVerificationModal(reasonText = "Authentication required.") {
                     method: "GET", 
                     headers: { 'Content-Type': 'application/json' }
                 });
-                if (!accountRes.ok) throw new Error("Could not download security parameters.");
-                
-                const vaultParams = await accountRes.json();
 
-                const { kek } = await deriveKeysAndTokens(masterPassword, vaultParams.salt);
+                const payload = await accountRes.json();
+                if (!accountRes.ok) errorEl.textContent = payload.error;
+
+                const { kek } = await deriveKeysAndTokens(masterPassword, payload.salt);
                 
                 // Step C: Attempt local DEK decryption
-                const activeDEK = await decryptDEK(vaultParams.wrapped_dek, kek);
+                const activeDEK = await decryptDEK(payload.wrapped_dek, kek);
 
                 // SUCCESS STATE 🎉
                 cryptoSession.setSession(activeDEK);
                 passwordInput.value = "";
+                errorEl.textContent = "";
                 
                 // Set flag and clean up event listeners
                 wasResolved = true;
@@ -503,7 +498,6 @@ async function openVerificationModal(reasonText = "Authentication required.") {
                 console.error("Re-verification failed:", err);
                 if (errorEl) errorEl.textContent = "Incorrect master password. Please try again.";
                 if (passwordInput) passwordInput.select();
-                // We DO NOT resolve or reject here, keeping the modal open so they can try again.
             }
         }
 
@@ -734,8 +728,13 @@ if (loginBtn) {
         e.preventDefault();
         
         const loginUrl = loginBtn.getAttribute('data-url');
-        const username = document.getElementById('loginUsername').value;
-        const password = document.getElementById('loginPassword').value;
+        const username = document.getElementById('loginUsername')?.value || "";
+        const password = document.getElementById('loginPassword')?.value || "";
+
+        if (!loginUrl) {
+            loginError.textContent = "An unexpected error occurred. Please refresh the page."
+            return;
+        }
 
         if (!username.trim() || !password.trim()) {
             loginError.textContent = "Please fill out all fields.";
@@ -743,24 +742,26 @@ if (loginBtn) {
         }
 
         try {
+            loginBtn.disabled = true;
+
             let res = await fetch(loginUrl, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },    
                 body: JSON.stringify({ session_username: username })
             });
 
+            let payload = await res.json();
+
             if (!res.ok) {
-                loginError.textContent = "Invalid username or password."
+                loginError.textContent = "Login failed: " + (payload.error || "Unknown server error.");
                 return;
             }
 
-            let authParams = await res.json();
-
-            const { hashHex, kek } = await deriveKeysAndTokens(password, authParams.salt);
+            const { hashHex, kek } = await deriveKeysAndTokens(password, payload.salt);
             
             let activeDEK;
             try {
-                activeDEK = await decryptDEK(authParams.wrapped_dek, kek);
+                activeDEK = await decryptDEK(payload.wrapped_dek, kek);
             } catch (dekError) {
                 loginError.textContent = "Invalid username or password."
                 return;
@@ -773,30 +774,34 @@ if (loginBtn) {
                     session_username: username, 
                     session_hash: hashHex 
                 })
-            }); 
+            });
+            
+            payload = await res.json();
 
             if (res.ok) {
                 startSessionCountdown(15);
 
                 cryptoSession.setSession(activeDEK);
 
-                document.getElementById("loginForm").reset();
                 loginError.textContent = "";
                 
                 const entriesData = await secureFetch("/entries", { method: "GET" });
 
-                const payload = await entriesData.json();
+                payload = await entriesData.json();
 
                 await initializeAndLoadDashboard(payload);
-
-                console.log("🔒 Vault unlocked. Cryptographic assets locked into runtime memory.");
+                
+                document.getElementById("loginForm")?.reset();
             } else {
-                loginError.textContent = "Invalid username or password."
+                loginError.textContent = "Login failed: " + payload.error;
                 return;
             }
-            } catch (globalError) {
-                console.error(globalError);
-                throw globalError;
+        } catch (globalError) {
+            console.error(globalError);
+            alert("A network or system error occurred. Please try again.");
+            window.location.reload();
+        finally {
+            if (loginBtn) loginBtn.disabled = false;
         }
     });
 }
@@ -804,28 +809,35 @@ if (loginBtn) {
 // REGISTRATION ACTIONS
 const registerBtn = document.getElementById('registerBtn');
 if (registerBtn) {
+    const registerError = document.getElementById('registerError');
     registerBtn.addEventListener('click', async (e) => {
         e.preventDefault();
 
         const registerUrl = registerBtn.getAttribute('data-url');
-        const username = document.getElementById('registerUsername').value;
-        const password = document.getElementById('registerPassword').value;
-        const conf = document.getElementById('registerConfirm').value;
+        const username = document.getElementById('registerUsername')?.value || "";
+        const password = document.getElementById('registerPassword')?.value || "";
+        const conf = document.getElementById('registerConfirm')?.value || "";
+        if(!registerUrl) {
+            registerError.textContent = "An unexpected error occurred. Please refresh the page.";
+            return;
+        }
 
         if (!username.trim() || !password.trim() || !conf.trim()) {
-            document.getElementById("registerError").textContent = "Please fill out all fields.";
+            registerError.textContent = "Please fill out all fields.";
             return; 
         }
 
         if (password !== conf) {
-            document.getElementById("registerError").textContent = "Password mismatch.";
+            registerError.textContent = "Password mismatch.";
             return;
         }
 
         try {
+            registerBtn.disabled = true;
+
             const { saltHex, hashHex, kek } = await deriveKeysAndTokens(password);
             const rawDekBytes = crypto.getRandomValues(new Uint8Array(32));
-            const wrapped_dek = await encryptDEK(kek, rawDekBytes)
+            const wrapped_dek = await encryptDEK(kek, rawDekBytes);
 
             const res = await fetch(registerUrl, {
                 method: 'POST',
@@ -841,29 +853,29 @@ if (registerBtn) {
             if (res.ok) {
                 startSessionCountdown(15);
 
-                const decryptedDek = await decryptDEK(wrapped_dek, kek);
+                const activeDEK = await decryptDEK(wrapped_dek, kek);
 
-                cryptoSession.setSession(decryptedDek);
+                cryptoSession.setSession(activeDEK);
 
-                document.getElementById("registerForm").reset();
-                document.getElementById("registerError").textContent = "";
+                registerError.textContent = "";
 
                 const entriesData = await secureFetch("/entries", { method: "GET" });
-
                 const payload = await entriesData.json();
 
                 await initializeAndLoadDashboard(payload);
 
-                console.log("🔒 Vault unlocked. Cryptographic assets locked into runtime memory.");
+                document.getElementById("registerForm")?.reset();
             } else {
                 const payload = await res.json();
-                alert("Registration failed: " + (payload.error || "Unknown server error."));
+                registerError.textContent = "Registration failed: " + (payload.error || "Unknown server error.");
+                return;
             }
         } catch (globalError) {
             console.error("Registration pipeline error:", globalError);
-            alert("An unexpected network or cryptographic error occurred.");
-            document.getElementById("registerForm").reset();
-            document.getElementById("registerError").textContent = "";
+            alert("A network or system error occurred. Please try again.");
+            window.location.reload();
+        }finally {
+            if (registerBtn) registerBtn.disabled = false;
         }
     });
 }
@@ -899,16 +911,27 @@ if (logOutBtn) {
 // NEW ENTRY ACTIONS
 const createVaultBtn = document.getElementById('createVaultBtn');
 if (createVaultBtn) {
+    const createVaultError = document.getElementById("createVaultError");
     createVaultBtn.addEventListener('click', async (e) => {
         e.preventDefault();
 
         const createVaultUrl = createVaultBtn.getAttribute('data-url');
-        const website = document.getElementById('createVaultWebsite').value;
-        const username = document.getElementById('createVaultUsername').value;
-        const password = document.getElementById('createVaultPassword').value;
+        const website = document.getElementById('createVaultWebsite')?.value || "";
+        const username = document.getElementById('createVaultUsername')?.value || "";
+        const password = document.getElementById('createVaultPassword')?.value || "";
+
+        if (!createVaultUrl) {
+            createVaultError.textContent = "An unexpected error occurred. Please refresh the page.";
+            return;
+        }
 
         if (!username.trim() || !password.trim() || !website.trim()) {
-            document.getElementById("createVaultError").textContent = "Please fill out all fields.";
+            createVaultError.textContent = "Please fill out all fields.";
+            return; 
+        }
+
+        if (password.length < 8 || password.length > 32) {
+            document.getElementById('createVaultError').textContent = "Password must be between 4 and 32 characters.";
             return; 
         }
 
@@ -918,11 +941,18 @@ if (createVaultBtn) {
         }
 
         try {
-            const dek = cryptoSession.getDEK();
-            
+            createVaultBtn.disabled = true;
 
-            console.log("DEK:", dek);
-            console.log("Cryptokey?", dek instanceof CryptoKey);
+            let dek = cryptoSession.getDEK();
+
+            if (!dek) {
+                try {
+                    dek = await openVerificationModal("Unable to save. Refreshing the page locked your secure data container. Please log in again to re-authenticate and save your data.")
+                } catch (modalCancel) {
+                    console.warn("View authorization bypassed by user.");
+                    throw new Error("Authorization cancelled by user."); 
+                }
+            }
 
             const ciphertext = await encryptVaultPassword(password, dek);
 
@@ -986,12 +1016,14 @@ if (createVaultBtn) {
             } else {
                 console.error("Failed to retrieve vault entries from REST API.");
             }
-            document.getElementById("entryForm").reset();
-            document.getElementById("createVaultError").textContent = "";
-            document.getElementById('closeVaultModalBtn').click();
+            document.getElementById("entryForm")?.reset();
+            if (createVaultError) createVaultError.textContent = "";
+            document.getElementById('closeVaultModalBtn')?.click();
         } catch (globalError) {
-            console.error("Login pipeline error:", globalError);
-            alert("Invalid username or password");
+            console.error(globalError);
+            alert("A network or system error occurred. Please try again.");
+        } finally {
+            createVaultBtn.disabled = false;
         }
     });
 }
@@ -1006,23 +1038,35 @@ if (verifyPwBtn) {
 
     verifyPwBtn.addEventListener('click', async (e) => {
         e.preventDefault();
+        if (!baseUrl) {
+            if (verifyError) verifyError.textContent = "An unexpected error occurred. Please refresh the page.";
+            return;
+        }
 
-        if (!passwordInput.value.trim()) {
-            alert("Password field cannot be empty.");
+        const currentPasswordVal = passwordInput?.value || "";
+
+        if (!currentPasswordVal.trim()) {
+            if (verifyError) verifyError.textContent = "Password field cannot be empty.";
             return; 
         }
 
         try {
-
+            verifyPwBtn.disabled = true;
+            
             let accountRes = await secureFetch(baseUrl, { 
                 method: "GET",
                 headers: { 'Content-Type': 'application/json'}
             });
-            if (!accountRes.ok) throw new Error("Could not download security parameters.");
-            
+
             const vaultParams = await accountRes.json();
 
-            const { hashHex, kek } = await deriveKeysAndTokens(passwordInput.value, vaultParams.salt);
+            if (!accountRes.ok) {
+                if (verifyError) verifyError.textContent = vaultParams.error || "Failed to retrieve security configuration.";
+                verifyForm?.reset();
+                return;
+            }
+
+            const { hashHex, kek } = await deriveKeysAndTokens(currentPasswordVal, vaultParams.salt);
 
             accountRes = await secureFetch(baseUrl, {
                 method: "POST",
@@ -1032,8 +1076,8 @@ if (verifyPwBtn) {
             });
             if (!accountRes.ok) {
                 const payload = await accountRes.json();
-                alert(payload.error)
-                verifyForm.reset();
+                if (verifyError) verifyError.textContent = payload.error || "Verification failed.";
+                verifyForm?.reset();
                 return;
             }
             
@@ -1041,15 +1085,23 @@ if (verifyPwBtn) {
             const activeDEK = await decryptDEK(vaultParams.wrapped_dek, kek, true);
             cryptoSession.setSession(activeDEK);
 
-            verifyForm.reset();
-            const modal1 = bootstrap.Modal.getInstance(document.getElementById('verifyPasswordModal'));
-            const modal2 = new bootstrap.Modal(document.getElementById('changePasswordModal'));
+            verifyForm?.reset();
+            if (verifyError) verifyError.textContent = "";
+
+            const modalElement1 = document.getElementById('verifyPasswordModal');
+            const modalElement2 = document.getElementById('changePasswordModal');
+            
+            const modal1 = modalElement1 ? bootstrap.Modal.getInstance(modalElement1) : null;
+            const modal2 = modalElement2 ? new bootstrap.Modal(modalElement2) : null;
+            
             if (modal1) modal1.hide();
             if (modal2) modal2.show();
             
         } catch (err) {
-            console.error("POST error:", err);
-            verifyError.textContent = "Network error. Try again.";
+            console.error(err);
+            alert("A network or system error occurred. Please try again.");
+        } finally {            
+            if (verifyPwBtn) verifyPwBtn.disabled = false;
         }
     });
 }
@@ -1064,25 +1116,43 @@ if (updateNewPwBtn) {
     updateNewPwBtn.addEventListener('click', async (e) => {
         e.preventDefault();
 
-        if (!newPasswordInput.value.trim() || !newConfInput.value.trim()) {
-            patchError.textContent = "All fields cannot be empty.";
+        if (!baseUrl) {
+            if (patchError) patchError.textContent = "An unexpected error occurred. Please refresh the page.";
             return;
         }
 
-        if (newPasswordInput.value !== newConfInput.value) {
-            patchError.textContent = "Password mismatch.";
+        const newPwVal = newPasswordInput?.value || "";
+        const newConfVal = newConfInput?.value || "";
+
+        if (!newPwVal.trim() || !newConfVal.trim()) {
+            if (patchError) patchError.textContent = "All fields cannot be empty.";
+            return;
+        }
+
+        if (newPwVal !== newConfVal) {
+            if (patchError) patchError.textContent = "Password mismatch.";
+            if (newConfInput) {
+                newConfInput.value = "";
+                newConfInput.focus();
+            }
             return;
         }
 
         try {
+            updateNewPwBtn.disabled = true;
+
             const activeDEK = cryptoSession.getDEK();
             if (!activeDEK) {
                 alert("Password change can't be completed due to refreshing the page or the attempt took too long.");
-                patchPasswordForm.reset();
-                const modal1 = bootstrap.Modal.getInstance(document.getElementById('verifyPasswordModal'));
-                const modal2 = new bootstrap.Modal(document.getElementById('changePasswordModal'));
-                if (modal1) modal1.show();
+                patchForm?.reset();
+                if (patchError) patchError.textContent = "";
+                const verifyModalEl = document.getElementById('verifyPasswordModal');
+                const changeModalEl = document.getElementById('changePasswordModal');
+                const modal1 = verifyModalEl ? (bootstrap.Modal.getInstance(verifyModalEl) || new bootstrap.Modal(verifyModalEl)) : null;
+                const modal2 = changeModalEl ? (bootstrap.Modal.getInstance(changeModalEl) || new bootstrap.Modal(changeModalEl)) : null;
+                
                 if (modal2) modal2.hide();
+                if (modal1) modal1.show();
                 return;
             }
             
@@ -1106,15 +1176,22 @@ if (updateNewPwBtn) {
             if (!accountRes.ok) {
                 const payload = await accountRes.json();
                 patchError.textContent = payload.error || "Failed to update password.";
+                patchForm?.reset();
+                newPasswordInput?.focus();
                 return;
             }
             patchForm.reset()
+            if (patchError) patchError.textContent = "";
+
             alert("Master password updated successfully!");
-            const modal3 = bootstrap.Modal.getInstance(document.getElementById('changePasswordModal'));
-            if (modal3) modal3.hide();
+            const currentChangeModal = document.getElementById('changePasswordModal');
+            const modalSuccess = currentChangeModal ? bootstrap.Modal.getInstance(currentChangeModal) : null;
+            if (modalSuccess) modalSuccess.hide();
         } catch (err) {
             console.error("PATCH error:", err);
-            patchError.textContent = "Network error. Try again.";
+            alert("A network or system error occurred. Please try again.");
+        } finally {
+            if (updateNewPwBtn) updateNewPwBtn.disabled = false;
         }
     });
 }

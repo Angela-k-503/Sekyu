@@ -40,7 +40,10 @@ def entries():
 
         if not (vault_website and vault_username and vault_ciphertext):
             return {"error": "Required fields missing"}, 400
-
+        
+        if len(vault_username) > 255 or len(vault_website) > 2048:
+            return {"error": "Invalid request payload configuration."}, 400
+        
         try:
             strict_hex_string(vault_ciphertext, 72, 120)
         except (ValueError, TypeError) as e:
@@ -130,3 +133,5 @@ def entry_operations(id):
         except Exception as e:
             return {"error": "An internal error occurred while deleting your entry."}, 500
         
+
+       

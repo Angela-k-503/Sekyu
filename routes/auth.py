@@ -83,7 +83,7 @@ def accounts():
     if request.method == "GET":
         auth_user = query("SELECT username, salt, wrapped_dek FROM users WHERE id = ?", int(user_id))
         if not auth_user:
-            return {"error": "User environment not found"}, 400
+            return {"error": "User environment not found."}, 400
         
         result = auth_user[0]
         return{"salt": result["salt"], "wrapped_dek":result["wrapped_dek"]}
@@ -93,7 +93,7 @@ def accounts():
         current_hash = data.get("current_hash")
         
         if not current_hash:
-            return {"error": "Empty field submitted"}, 400
+            return {"error": "Empty field submitted."}, 400
         try:
             strict_hex_string(current_hash, 64, 64)
         except (ValueError, TypeError) as e:
@@ -101,7 +101,7 @@ def accounts():
 
         auth_data = query("SELECT hash FROM users WHERE id = ?", int(user_id))
         if not auth_data:
-            return {"error": "User environment not found"}, 404
+            return {"error": "User environment not found."}, 404
 
         try:
             ph.verify(auth_data[0]["hash"], current_hash)
@@ -120,15 +120,15 @@ def accounts():
             strict_hex_string(new_salt, 32, 32)
             strict_hex_string(new_hash, 64, 64)
             strict_hex_string(new_wrapped_dek, None, 120)
-        except (ValueError, TypeError) as e:
-            return {"error": str(e)}, 400
+        except (ValueError, TypeError):
+            return {"error": "Invalid request payload configuration."}, 400
         
         updated_hash = ph.hash(new_hash)
 
         try:
             query("UPDATE users SET hash = ?, salt = ?, wrapped_dek = ? WHERE id = ?", updated_hash, new_salt, new_wrapped_dek, int(user_id))
             return {"status": "success"}, 200
-        except Exception as e:
+        except Exception:
             return {"error": "An internal error occurred while updating your password."}, 500
              
 
