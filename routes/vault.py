@@ -73,7 +73,7 @@ def entries():
     else:
         try:
             master_username = query("SELECT username FROM users WHERE id = ?", int(user_id))
-            vault_entries = query("SELECT id, website, username, ciphertext FROM credentials WHERE user_id = ?", int(user_id))
+            vault_entries = query("SELECT id, website, username, ciphertext FROM credentials WHERE user_id = ? ORDER BY id DESC", int(user_id))
 
             entries = []
             if vault_entries:
@@ -86,8 +86,7 @@ def entries():
                     })
             return {"masterUsername": master_username[0]["username"], "entries":entries}, 200
         except Exception as e:
-            print("exception hit")
-            return {"status": "error", "message": str(e)}, 500
+            return {"error": "An internal error occurred while retrieving your entry."}, 500
     
     
 @vault_bp.route("/entries/<int:id>", methods=["PATCH", "DELETE"])

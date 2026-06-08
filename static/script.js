@@ -300,11 +300,6 @@ function initializePasswordGenerator(elements) {
         slider.value = val;
     });
 
-    passwordInput.addEventListener('input', (e) => {
-        if (fieldset) {
-            fieldset.disabled = (e.target.value.trim().length > 0);
-        }
-    });
 
     generateBtn.addEventListener('click', () => {
         const currentPassword = passwordInput.value || "";
@@ -318,7 +313,6 @@ function initializePasswordGenerator(elements) {
         const includeSpecials = specialsCheckbox ? specialsCheckbox.checked : true;
         
         passwordInput.value = runSecureGenerator(length, includeSpecials);
-        if (fieldset) fieldset.disabled = false;
 
         passwordInput.dispatchEvent(new Event('input'));
     });
@@ -419,6 +413,13 @@ async function decryptAndPopulateDashboard(entries, clearContainer = true) {
             generateBtn: clone.querySelector('.template-generate-trigger'),
             specialsCheckbox: clone.querySelector('.template-specials')
         });
+
+        const updatedPasswordField = clone.querySelector('.field-password');
+        if (updatedPasswordField) {
+            updatedPasswordField.addEventListener('input', (e) => {
+                checkStrength(e.target);
+            });
+        }
 
         container.appendChild(clone);
     });
@@ -546,7 +547,6 @@ async function togglePasswordVisibility(btn) {
     if (passwordDisplay.type === "password") {
         document.querySelectorAll('.entry-password-display').forEach(el => {
             if (el.type !== "password") {
-                el.value = "";
                 el.value = "••••••••••••";
                 el.type = "password";
 
@@ -573,10 +573,13 @@ async function togglePasswordVisibility(btn) {
             }
         }
 
-        let plainBuffer;
+        let plainBuffer = null;
+        let decryptedPlaintext = null;
+
         try {
             plainBuffer = await decryptVaultPassword(activeDEK, ciphertext); 
-            passwordDisplay.value = new TextDecoder().decode(plainBuffer);
+            decryptedPlaintext = new TextDecoder().decode(plainBuffer);
+            passwordDisplay.value = decryptedPlaintext;
             passwordDisplay.type = "text";
             icon.innerHTML = eyeOffIconHtml;
             
@@ -586,11 +589,13 @@ async function togglePasswordVisibility(btn) {
         } finally {
             if (plainBuffer) {
                 plainBuffer.fill(0);
+                plainBuffer = null;
             }
+            decryptedPlaintext = null;
+            activeDEK = null;
         }
 
     } else {
-        passwordDisplay.value = "";
         passwordDisplay.value = "••••••••••••";
         passwordDisplay.type = "password";
         icon.innerHTML = eyeIconHtml;
@@ -603,6 +608,8 @@ async function copyToClipboard(btn) {
 
     const passwordDisplay = vaultCard.querySelector('.entry-password-display');
     if (!passwordDisplay) return;
+
+    if (btn.disabled) return;
 
     const ciphertext = passwordDisplay.getAttribute('data-ciphertext');
     let activeDEK = cryptoSession.getDEK();
@@ -617,12 +624,14 @@ async function copyToClipboard(btn) {
     }
 
     let plainBuffer;
+    let plainPassword = null;
     const originalHTML = btn.innerHTML;
 
     try {
+        if (btn) btn.disabled = true;
 
         plainBuffer = await decryptVaultPassword(activeDEK, ciphertext);
-        const plainPassword = new TextDecoder().decode(plainBuffer);
+        plainPassword = new TextDecoder().decode(plainBuffer);
         
         await navigator.clipboard.writeText(plainPassword);
 
@@ -637,16 +646,20 @@ async function copyToClipboard(btn) {
             if (btn && document.body.contains(btn)) {
                 btn.innerHTML = originalHTML;
                 btn.setAttribute('title', 'Copy Password');
+                btn.disabled = false;
             }
         }, 2000);
-
     } catch (err) {
         console.error("Clipboard copy operation failure:", err);
         alert("Failed to copy password securely.");
+        if (btn) btn.disabled = false;
     } finally {
         if (plainBuffer) {
             plainBuffer.fill(0);
+            plainBuffer = null;
         }
+        plainPassword = null;
+        activeDEK = null;
     }
 }
 
@@ -654,38 +667,55 @@ async function copyToClipboard(btn) {
 async function deleteEntry(btn, id) {
     if (!confirm("Are you sure you want to delete this vault entry?")) return;
 
+    if (btn.disabled) return;
+
     const entryCard = btn.closest('.vault-entry-card');
     const restUrl = `/entries/${id}`;
 
     try {
+
+        if (btn) btn.disabled = true;
+
         const res = await secureFetch(restUrl, { method: "DELETE" });
 
-        if (res.status === 204) {
+        if (res.ok) {
             if (entryCard) {
                 entryCard.remove();
             }
 
             const container = document.getElementById('vaultEntriesContainer');
-            if (container && container.children.length === 0) {
-                container.textContent = '';
-                const placeholderDiv = document.createElement('div');
-                placeholderDiv.className = 'mb-3 no-entries-placeholder';
+            if (container) {
+                const remainingCards = container.querySelectorAll('.vault-entry-card');
                 
-                const textPara = document.createElement('p');
-                textPara.className = 'text-muted m-0';
-                textPara.textContent = 'No saved login credentials yet.';
-                
-                placeholderDiv.appendChild(textPara);
-                container.appendChild(placeholderDiv);
+                if (remainingCards.length === 0) {
+                    container.textContent = '';
+                    
+                    const placeholderDiv = document.createElement('div');
+                    placeholderDiv.className = 'mb-3 no-entries-placeholder';
+                    
+                    const textPara = document.createElement('p');
+                    textPara.className = 'text-muted m-0';
+                    textPara.textContent = 'No saved login credentials yet.';
+                    
+                    placeholderDiv.appendChild(textPara);
+                    container.appendChild(placeholderDiv);
+                }
             }
             return;
         }
         
-        const data = await res.json();
-        throw new Error(data.error || "The server rejected the deletion request.");
+        let errorMessage = "The server rejected the deletion request.";
+        try {
+            const data = await res.json();
+            if (data && data.error) errorMessage = data.error;
+        } catch (jsonErr) {
+            // Suppress JSON parsing errors
+        } 
+        throw new Error(errorMessage);
     } catch (err) {
         console.error("Deletion lifecycle failure:", err);
         alert(err.message || "Network Error: System was unable to process deletion request.");
+        if (btn) btn.disabled = false;
     }
 }
 
@@ -711,15 +741,17 @@ async function submitUpdateForm(btn, id) {
 
     let requestBody = {};
     let usernameInput = "";
-    let encryptedHex = "";
+    let encryptedHex = null;
+    let activeDEK = null;
+    let passwordInput = "";
 
     if (shouldUpdateUser) {
         usernameInput = usernameField.value.trim();
-        if (!usernameInput) {
+        if (!usernameInput || !usernameInput.trim()) {
             if (fieldError) fieldError.textContent = "Username field cannot be empty.";
             return;
         }
-        if (username.length > 255) {
+        if (usernameInput.length > 255) {
             if (fieldError) fieldError.textContent = "Username cannot be longer than 255 characters.";
             return;
         }
@@ -727,13 +759,17 @@ async function submitUpdateForm(btn, id) {
     }
 
     if (shouldUpdatePass) {
-        const passwordInput = passwordField.value;
-        if (!passwordInput || !passwordInput.trim() || passwordInput.length < 8) {
-            if (fieldError) fieldError.textContent = "Password must be at least 8 characters long.";
+        passwordInput = passwordField.value;
+        if (!passwordInput || !passwordInput.trim()) {
+            if (fieldError) fieldError.textContent = "Password field cannot be empty.";
+            return;
+        }
+        if (passwordInput.length < 8 || passwordInput.length > 32) {
+            if (fieldError) fieldError.textContent = "Password must be between 8 and 32 characters.";
             return;
         }
 
-        let activeDEK = cryptoSession.getDEK();
+        activeDEK = cryptoSession.getDEK();
         if (!activeDEK) {
             try {
                 activeDEK = await openVerificationModal("Confirm your master password to save changes.");
@@ -744,7 +780,10 @@ async function submitUpdateForm(btn, id) {
         }
 
         encryptedHex = await encryptVaultPassword(passwordInput, activeDEK);
-        passwordField.value = ""; // Sanitize raw field instantly
+
+        if (passwordField) passwordField.value = "";
+        passwordInput = "";
+
         requestBody.new_ciphertext = encryptedHex;
     }
 
@@ -762,8 +801,8 @@ async function submitUpdateForm(btn, id) {
             alert("Entry successfully updated!");
 
             if (fieldError) fieldError.textContent = ""; 
-            usernameField.value = "";
-            passwordField.value = "";
+            if (usernameField) usernameField.value = "";
+            if (passwordField) passwordField.value = "";
             
             const uCheck = modalContent.querySelector('.toggle-update-username');
             const pCheck = modalContent.querySelector('.toggle-update-password');
@@ -775,12 +814,13 @@ async function submitUpdateForm(btn, id) {
                 if (genWrapper) { genWrapper.style.opacity = "0.5"; genWrapper.style.pointerEvents = "none"; }
             }
 
+            passwordField?.dispatchEvent(new Event('input'));
+
             const openModalElement = btn.closest('.modal');
             const modalInstance = bootstrap.Modal.getInstance(openModalElement);
             if (modalInstance) modalInstance.hide();
 
-            const actionDeleteBtn = document.querySelector(`.btn-delete-action[data-entry-id="${id}"]`);
-            const entryCard = actionDeleteBtn ? actionDeleteBtn.closest('.vault-entry-card') : null;
+            const entryCard = btn.closest('.vault-entry-card');
             if (entryCard) {
                 if (shouldUpdateUser) {
                     const userDisplay = entryCard.querySelector('.entry-username');
@@ -800,14 +840,24 @@ async function submitUpdateForm(btn, id) {
                 }
             }
         } else {
-            const errData = await response.json();
-            if (fieldError) fieldError.textContent = errData.error || "Unknown server error.";
+            let serverErrorMsg = "Unknown server error.";
+            try {
+                const errData = await response.json();
+                if (errData && errData.error) serverErrorMsg = errData.error;
+            } catch (jsonErr) {
+                // Keep the default fallback message if JSON extraction hits an empty body
+            }
+            if (fieldError) fieldError.textContent = serverErrorMsg;
         }
     } catch (err) {
         console.error("Update request processing failed:", err);
         alert("Network error occurred during record modification.");
     } finally {
         if (btn) btn.disabled = false;
+        encryptedHex = null;
+        activeDEK = null;
+        passwordInput = null;
+        requestBody = null;
     }
 }
 
@@ -835,7 +885,7 @@ if (loginBtn) {
         if (!usernameField || !passwordField) return;
 
         const username = usernameField.value || "";
-        const password = passwordField.value || "";
+        let password = passwordField.value || "";
         if (!username.trim() || !password.trim()) {
             loginError.textContent = "Please fill out all fields.";
             return; 
@@ -870,6 +920,7 @@ if (loginBtn) {
             if (passwordField) passwordField.value = "";
 
             const { hashHex, kek } = await deriveKeysAndTokens(password, payload.salt);
+            password = null;
             
             let activeDEK;
             try {
@@ -893,15 +944,25 @@ if (loginBtn) {
             if (res.ok) {
                 startSessionCountdown(15);
                 cryptoSession.setSession(activeDEK);
-                loginError.textContent = "";
+                if (loginError) loginError.textContent = "";
                 
                 const entriesData = await secureFetch("/entries", { method: "GET" });
-                payload = await entriesData.json();
+                if (entriesData.ok) {
+                    payload = await entriesData.json();
+                    await initializeAndLoadDashboard(payload);
+                    document.getElementById("loginForm")?.reset();
+                } else {
+                    let fetchErrorMsg = "Authenticated successfully, but failed to retrieve secure vault entries.";
+                    try {
+                        const errPayload = await entriesData.json();
+                        if (errPayload && errPayload.error) fetchErrorMsg = errPayload.error;
+                    } catch (jsonErr) {
 
-                await initializeAndLoadDashboard(payload);
-                document.getElementById("loginForm")?.reset();
+                    }
+                    if (loginError) loginError.textContent = fetchErrorMsg;
+                }
             } else {
-                loginError.textContent = "Login failed: " + payload.error;
+                loginError.textContent = "Login failed: " + (payload?.error || "Invalid username or password");
                 return;
             }
         } catch (globalError) {
@@ -984,16 +1045,19 @@ if (registerBtn) {
             if (res.ok) {
                 startSessionCountdown(15);
                 cryptoSession.setSession(secureDEK);
-                registerError.textContent = "";
+                if (registerError) registerError.textContent = "";
 
                 const entriesData = await secureFetch("/entries", { method: "GET" });
-                const payload = await entriesData.json();
-
-                await initializeAndLoadDashboard(payload);
-                document.getElementById("registerForm")?.reset();
+                if (entriesData.ok) {
+                    const payload = await entriesData.json();
+                    await initializeAndLoadDashboard(payload);
+                    document.getElementById("registerForm")?.reset();
+                } else {
+                    if (registerError) registerError.textContent = "Account created, but failed to load initial vault data.";
+                }
             } else {
                 const payload = await res.json();
-                registerError.textContent = "Registration failed: " + (payload.error || "Unknown server error.");
+                if (registerError)registerError.textContent = "Registration failed: " + (payload?.error || "Unknown server error.");
                 return;
             }
         } catch (globalError) {
@@ -1040,39 +1104,46 @@ if (createVaultBtn) {
         e.preventDefault();
 
         const createVaultUrl = createVaultBtn.getAttribute('data-url');
-        const website = document.getElementById('createVaultWebsite')?.value || "";
-        const username = document.getElementById('createVaultUsername')?.value || "";
-        const password = document.getElementById('createVaultPassword')?.value || "";
-
         if (!createVaultUrl) {
-            createVaultError.textContent = "An unexpected error occurred. Please refresh the page.";
+            if (createVaultError) createVaultError.textContent = "An unexpected error occurred. Please refresh the page.";
             return;
         }
+        const websiteField = document.getElementById('createVaultWebsite');
+        const usernameField = document.getElementById('createVaultUsername');
+        const passwordField = document.getElementById('createVaultPassword');
+        if (!websiteField || !usernameField || !passwordField) return;
 
+        const website = websiteField.value || "";
+        const username = usernameField.value || "";
+        let password = passwordField.value || "";
         if (!username.trim() || !password.trim() || !website.trim()) {
-            createVaultError.textContent = "Please fill out all fields.";
+            if (createVaultError) createVaultError.textContent = "Please fill out all fields.";
             return; 
         }
 
         if (website.length > 2048) {
-            createVaultError.textContent = "Website URL cannot be longer than 2048 characters.";
+            if (createVaultError) createVaultError.textContent = "Website URL cannot be longer than 2048 characters.";
             return;
         }
 
         if (username.length > 255) {
-            createVaultError.textContent = "Username cannot be longer than 255 characters.";
+            if (createVaultError) createVaultError.textContent = "Username cannot be longer than 255 characters.";
             return;
         }
 
         if (password.length < 8 || password.length > 32) {
-            createVaultError.textContent = "Password must be between 8 and 32 characters.";
+            if (createVaultError) createVaultError.textContent = "Password must be between 8 and 32 characters.";
             return; 
         }
 
-        try {
-            createVaultBtn.disabled = true;
-            let dek = cryptoSession.getDEK();
+        let dek = null;
+        let ciphertext = null;
+        let requestBody = null;
 
+        try {
+            if (createVaultBtn) createVaultBtn.disabled = true;
+
+            dek = cryptoSession.getDEK();
             if (!dek) {
                 try {
                     dek = await openVerificationModal("Unable to save. Refreshing the page locked your secure data container. Please log in again to re-authenticate and save your data.");
@@ -1082,19 +1153,28 @@ if (createVaultBtn) {
                 }
             }
 
-            const ciphertext = await encryptVaultPassword(password, dek);
+            ciphertext = await encryptVaultPassword(password, dek);
+            if (passwordField) passwordField.value = "";
+            password = "";
+
+            requestBody = {
+                vault_website: website,
+                vault_username: username,
+                vault_ciphertext: ciphertext
+            };
 
             const res = await secureFetch(createVaultUrl, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    vault_website: website,
-                    vault_username: username,
-                    vault_ciphertext: ciphertext
-                })
+                body: JSON.stringify(requestBody)
             });
 
             if (res.ok) {
+                alert("Login entry successfully submitted!");
+
+                if (usernameField) usernameField.value = "";
+                if (websiteField) websiteField.value = "";
+
                 const entry = await res.json();
                 const container = document.getElementById('vaultEntriesContainer');
                 const template = document.getElementById('entryTemplate');
@@ -1133,18 +1213,37 @@ if (createVaultBtn) {
                     specialsCheckbox: clone.querySelector('.template-specials')
                 });
 
-                container.appendChild(clone);
+                const updatedPasswordField = clone.querySelector('.field-password');
+                if (updatedPasswordField) {
+                    updatedPasswordField.addEventListener('input', (e) => {
+                        checkStrength(e.target);
+                    });
+                }
+
+                container.prepend(clone);
             } else {
                 console.error("Failed to retrieve vault entries from REST API.");
             }
             document.getElementById("entryForm")?.reset();
             if (createVaultError) createVaultError.textContent = "";
-            document.getElementById('closeVaultModalBtn')?.click();
+
+            passwordField?.dispatchEvent(new Event('input')); 
+
+            const createModalEl = document.getElementById('addEntry'); 
+            if (createModalEl) {
+                const modalInstance = bootstrap.Modal.getInstance(createModalEl);
+                if (modalInstance) {
+                    modalInstance.hide();
+                }
+            }
         } catch (globalError) {
             console.error(globalError);
             alert("A network or system error occurred. Please try again.");
         } finally {
             if (createVaultBtn) createVaultBtn.disabled = false;
+            ciphertext = null;
+            dek = null;
+            requestBody = null;
         }
     });
 }
@@ -1369,14 +1468,6 @@ document.addEventListener("DOMContentLoaded", async () => {
     const createPasswordInput = document.getElementById('createVaultPassword');
     if (createPasswordInput) {
         createPasswordInput.addEventListener('input', function() {
-            checkStrength(this);
-        });
-    }
-
-    // Update Form Password Strength Listener
-    const updatePasswordInput = document.querySelector('.entry-update-form .field-password');
-    if (updatePasswordInput) {
-        updatePasswordInput.addEventListener('input', function() {
             checkStrength(this);
         });
     }
