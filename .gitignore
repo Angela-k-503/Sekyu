@@ -1,22 +1,21 @@
-# Ignore Python junk
+# Python junk
 __pycache__/
-.venv/
+*.py[cod]
+*$py.class
 flask_session/
 
-# Ignore Database
-database.db
+# Database
+*.db
+*.sqlite
 
-# Ignore Environment variables (Crucial for security!)
+# Environment variables
 .env
 
-# Ignore Node.js stuff
-node_modules/
-package-lock.json
-package.json
+# Virtual enviroments
+.venv/
+venv/
+env/
 
-# Ignore temporary files/tools you aren't using
-main.py
-mock.html
-test.html
-test.js
-test1.js
+
+# OS Garbage
+Thumbs.db
