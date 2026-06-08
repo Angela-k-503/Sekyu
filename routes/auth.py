@@ -85,7 +85,7 @@ def sessions():
             set_access_cookies(session_response, session_token)
             return session_response, 200
         except Exception:
-            return {"error": "Failed verification"}, 401
+            return {"error": "Incorrect master password. For security, your session has been closed."}, 401
     return {"error": "Invalid request."}, 400
 
 @auth_bp.route("/accounts", methods=["GET", "POST", "PATCH"])
