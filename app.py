@@ -39,11 +39,11 @@ def check_if_token_revoked(jwt_header, jwt_payload):
 def add_security_and_cache_headers(response):
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; "
-        "script-src 'self' https://cdn.jsdelivr.net 'unsafe-eval'; "
-        "style-src 'self' https://cdn.jsdelivr.net 'unsafe-inline'; "
-        "connect-src 'self' https://cdn.jsdelivr.net; "
+        "script-src 'self' 'unsafe-eval'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "connect-src 'self'; "
         "img-src 'self' data:; "
-        "object-src 'none';"
+        "object-src 'none'; "
     )
     if response.mimetype in ['text/css', 'application/javascript', 'image/png', 'image/jpeg']:
         response.headers["Cache-Control"] = "public, max-age=86400"
