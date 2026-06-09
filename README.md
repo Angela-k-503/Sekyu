@@ -3,10 +3,22 @@ A Zero-Knowledge, Single-Page Application (SPA) Password Manager using **Flask**
 
 
 ---
-## Security Architecture
-* **Client-Side Key Derivation &Encryption:** Raw password and keys never leave the browser. Utilized Argon2id (via WASM) to derive authentication hash and Key Encryption Key (KEK). Vault entries are fully protected using authenticated 256-bit AES-GCM Data Encryption Key (DEK).
-* **Stateless, Single-Use JWTs:** JSON Web Tokens (JWT) restricted to a 15-minute lifespan with no refresh tokens, forcing immediate client-side data eviction upon expiration.
-* **Infrastructure Hardening:** Implements endpoint rate limiting (Flask-Limiter), strict Content Security Policy (CSP) middleware for WASM isolation, and reverse-proxy compatibility via ProxyFix.
+## Security Architecture Overview
+* **Frontend (Vanilla SPA):**
+- Handles all cryptographic operations (Argon2id, AES-GCM)
+- Manages application state in-memory only 
+- Communicates with backend via REST (fetch API)
+
+* **Backend (Flask API):**
+- Stores only encrypted vault payloads; has no access to plaintext data or cryptographic keys
+- Enforces rate limiting via Flask-Limiter to mitigate abuse
+- Stateless JWT authentication (15-minute expiry, no refresh tokens)
+- Strict Content Security Policy (CSP) enforcing same-origin script execution and blocking third-party JavaScript, with WebAssembly enabled for Argon2id key derivation
+
+* **Crypto Layer:**
+- Argon2id (WASM) for key derivation
+- AES-256-GCM for vault encryption
+- Zero-knowledge design (server cannot decrypt data)
 
 ---
 

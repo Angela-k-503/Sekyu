@@ -1,6 +1,28 @@
 import { argon2id } from 'https://cdn.jsdelivr.net/npm/hash-wasm@4.11.0/+esm';
 import { cryptoSession } from './cryptoSession.js';
 
+window.addEventListener('error', function (event) {
+    const target = event.target;
+    
+    // Check if the element that failed to load was a script or stylesheet from a CDN
+    if (target.tagName === 'SCRIPT' || target.tagName === 'LINK') {
+        if (target.src?.includes('cdn') || target.href?.includes('cdn')) {
+            const banner = document.getElementById('cdn-error-banner');
+            if (banner) {
+                banner.style.display = 'block';
+            }
+        }
+    }
+}, true);
+
+// Safety net check once the page has fully parsed
+document.addEventListener("DOMContentLoaded", () => {
+    if (typeof hashWasm === 'undefined') {
+        const banner = document.getElementById('cdn-error-banner');
+        if (banner) banner.style.display = 'block';
+    }
+});
+
 // GLOBAL STATE & LIFECYCLE TRACKERS
 let sessionTimeoutId = null;
 let tokenExpirationTime = null;
