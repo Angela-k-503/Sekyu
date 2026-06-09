@@ -100,28 +100,37 @@ def entry_operations(id):
         new_username = update_data.get("new_username")
         new_ciphertext = update_data.get("new_ciphertext")
         
-        if not new_username or not new_ciphertext:
-            return {"error": "You must provide a username or a password to update"}, 400
 
-        if len(new_username) > 255:
+        if not new_username and not new_ciphertext:
+            return {"error": "You must provide a username or a password to update"}, 400
+            
+        if new_username and len(new_username) > 255:
             return {"error": "Invalid request payload configuration."}, 400
-        
+            
+        if new_ciphertext:
+            try:
+                strict_hex_string(new_ciphertext, 72, 120)
+            except (ValueError, TypeError):
+                return {"error": "Invalid request payload configuration."}, 400
+
         try:
-            strict_hex_string(new_ciphertext, 72, 120)
-        except (ValueError, TypeError):
-            return {"error": "Invalid request payload configuration."}, 400
-    
-        try:
-            query("UPDATE credentials SET username = ?, ciphertext = ?  WHERE id = ? AND user_id = ?",  new_username, new_ciphertext, id, int(user_id))
+            if new_username and new_ciphertext:
+                query("UPDATE credentials SET username = ?, ciphertext = ? WHERE id = ? AND user_id = ?", 
+                    new_username, new_ciphertext, id, int(user_id))
+            elif new_username:
+                query("UPDATE credentials SET username = ? WHERE id = ? AND user_id = ?", 
+                    new_username, id, int(user_id))
+            elif new_ciphertext:
+                query("UPDATE credentials SET ciphertext = ? WHERE id = ? AND user_id = ?", 
+                    new_ciphertext, id, int(user_id))   
             return {"status": "success"}, 200
 
         except Exception as e:
             if "UNIQUE constraint failed" in str(e):
-                return {"error": "An entry with this username already exists for this site."}, 409
+                return {"error": "An entry with this username already exists for this website."}, 409
             return {"error": "An internal error occurred while updating your entry."}, 500
-    
+   
     if request.method == "DELETE":
-        user_id = get_jwt_identity()
         
         entry = query("SELECT 1 FROM credentials WHERE id = ? AND user_id = ?", id, int(user_id))
         if not entry:
@@ -133,6 +142,8 @@ def entry_operations(id):
             return res
         except Exception as e:
             return {"error": "An internal error occurred while deleting your entry."}, 500
+        
+    return { "error" : "Bad request"}, 400
         
 
        
