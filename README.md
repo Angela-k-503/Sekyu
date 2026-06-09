@@ -42,7 +42,7 @@ While this project is fully functional, implementing a Single-Page Application (
 ## Demo Web Access
 A live, production-ready version of the site is available to test. However, to keep hosting maintenance minimal, the live site is treated as a temporary sandbox for recruiters:
 
-- Access the Live Production Demo: `https://your-demo-link-here.com`
+- Access the Live Production Demo: `https://bonn13.pythonanywhere.com/`
 - Registration required: You can use fake credentials as the app only needs a unique username to create an isolated vault.
 - 24-hour Data Purge: You are welcome to test all features, but please note that all database entries are automatically deleted every 24 hours. Do not store actual production passwords here!
 - Host It Yourself: This project is fully open-source and production-ready. If you find this architecture promising and want permanent storage, I highly encourage you to clone the repository and host it locally or on your own server.
