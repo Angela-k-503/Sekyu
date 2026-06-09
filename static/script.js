@@ -1,27 +1,5 @@
-import { argon2id } from 'https://cdn.jsdelivr.net/npm/hash-wasm@4.11.0/+esm';
+import { argon2id } from './vendor/hash-wasm.js';
 import { cryptoSession } from './cryptoSession.js';
-
-window.addEventListener('error', function (event) {
-    const target = event.target;
-    
-    // Check if the element that failed to load was a script or stylesheet from a CDN
-    if (target.tagName === 'SCRIPT' || target.tagName === 'LINK') {
-        if (target.src?.includes('cdn') || target.href?.includes('cdn')) {
-            const banner = document.getElementById('cdn-error-banner');
-            if (banner) {
-                banner.style.display = 'block';
-            }
-        }
-    }
-}, true);
-
-// Safety net check once the page has fully parsed
-document.addEventListener("DOMContentLoaded", () => {
-    if (typeof hashWasm === 'undefined') {
-        const banner = document.getElementById('cdn-error-banner');
-        if (banner) banner.style.display = 'block';
-    }
-});
 
 // GLOBAL STATE & LIFECYCLE TRACKERS
 let sessionTimeoutId = null;
@@ -1143,9 +1121,21 @@ if (registerBtn) {
             console.error("Registration pipeline error:", globalError);
             alert("A network or system error occurred. Please try again.");
         } finally {
-            if (registerBtn && !registrationSuccessful) {
+            if (registerBtn) {
                 registerBtn.disabled = false;
             }
+            password = null;
+            conf = null;
+            hashHex = null;
+            saltHex = null;
+            kek = null;
+            secureDEK = null;
+            if (keyData) {
+                keyData.kek = null;
+                keyData.hashHex = null;
+                keyData.saltHex = null;
+            }
+            keyData = null;
         }
     });
 }
@@ -1223,7 +1213,6 @@ if (createVaultBtn) {
         let dek = null;
         let ciphertext = null;
         let requestBody = null;
-        let creationSuccessful = false;
 
         try {
             if (createVaultBtn) createVaultBtn.disabled = true;
@@ -1255,7 +1244,6 @@ if (createVaultBtn) {
             });
 
             if (res.ok) {
-                creationSuccessful = true;
                 alert("Login entry successfully submitted!");
 
                 if (usernameField) usernameField.value = "";
@@ -1335,7 +1323,7 @@ if (createVaultBtn) {
             console.error(globalError);
             alert("A network or system error occurred. Please try again.");
         } finally {
-            if (createVaultBtn && !creationSuccessful) {
+            if (createVaultBtn) {
                 createVaultBtn.disabled = false;
             }
             ciphertext = null;
@@ -1344,6 +1332,8 @@ if (createVaultBtn) {
         }
     });
 }
+
+
 
 // PROFILE & ACCOUNT SECURITY SETTINGS
 // Handle Master Password Change Verification
@@ -1367,8 +1357,6 @@ if (verifyPwBtn) {
             if (verifyError) verifyError.textContent = "Password field cannot be empty.";
             return; 
         }
-
-        let verificationSuccessful = false;
 
         try {
             verifyPwBtn.disabled = true;
@@ -1425,7 +1413,6 @@ if (verifyPwBtn) {
             keyData.hashHex = null;
             keyData = null;
             
-            verificationSuccessful = true;
             verifyForm?.reset();
             if (verifyError) verifyError.textContent = "";
 
@@ -1446,9 +1433,17 @@ if (verifyPwBtn) {
                 alert(err.message);
             }
         } finally {            
-            if (verifyPwBtn && !verificationSuccessful) {
+            if (verifyPwBtn) {
                 verifyPwBtn.disabled = false;
             }
+            currentPasswordVal = null;
+            hashHex = null;
+            kek = null;
+            if (keyData) {
+                keyData.kek = null;
+                keyData.hashHex = null;
+            }
+            keyData = null;
         }
     });
 }
@@ -1563,9 +1558,20 @@ if (updateNewPwBtn) {
             console.error("PATCH error:", err);
             alert("A network or system error occurred. Please try again.");
         } finally {
-            if (updateNewPwBtn && !patchSuccessful) {
+            if (updateNewPwBtn) {
                 updateNewPwBtn.disabled = false;
             }
+            newPwVal = null;
+            newConfVal = null;
+            saltHex = null;
+            hashHex = null;
+            kek = null;
+            if (keyData) {
+                keyData.kek = null;
+                keyData.hashHex = null;
+                keyData.saltHex = null;
+            }
+            keyData = null;
         }
     });
 }
@@ -1573,6 +1579,7 @@ if (updateNewPwBtn) {
 
 // DOM INITIALIZATION LIFECYCLE HOOKS
 document.addEventListener("DOMContentLoaded", async () => {
+
     const clearAuthForms = () => {
         document.getElementById('loginForm')?.reset();
         document.getElementById('registerForm')?.reset();
