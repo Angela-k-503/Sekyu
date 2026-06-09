@@ -1271,7 +1271,6 @@ if (createVaultBtn) {
                 clone.querySelector('.entry-website').textContent = entry.website;
                 clone.querySelector('.entry-username').textContent = entry.username;
                 clone.querySelector('.entry-website-title-span').textContent = entry.website;
-                clone.querySelector('.field-username').value = entry.username;
                 clone.querySelector('.entry-password-display').setAttribute('data-ciphertext', entry.ciphertext);
 
                 clone.querySelector('.btn-delete-action')?.setAttribute('data-entry-id', entry.id);
