@@ -4,18 +4,18 @@ A Zero-Knowledge, Single-Page Application (SPA) Password Manager using **Flask**
 
 ---
 ## Security Architecture Overview
-* **Frontend (Vanilla SPA):**
+**Frontend (Vanilla SPA):**
 - Handles all cryptographic operations (Argon2id, AES-GCM)
 - Manages application state in-memory only 
 - Communicates with backend via REST (fetch API)
 
-* **Backend (Flask API):**
+**Backend (Flask API):**
 - Stores only encrypted vault payloads; has no access to plaintext data or cryptographic keys
 - Enforces rate limiting via Flask-Limiter to mitigate abuse
 - Stateless JWT authentication (15-minute expiry, no refresh tokens)
 - Strict Content Security Policy (CSP) enforcing same-origin script execution and blocking third-party JavaScript, with WebAssembly enabled for Argon2id key derivation
 
-* **Crypto Layer:**
+**Crypto Layer:**
 - Argon2id (WASM) for key derivation
 - AES-256-GCM for vault encryption
 - Zero-knowledge design (server cannot decrypt data)
@@ -42,9 +42,9 @@ While this project is fully functional, implementing a Single-Page Application (
 ## Demo Web Access
 A live, production-ready version of the site is available to test. However, to keep hosting maintenance minimal, the live site is treated as a temporary sandbox for recruiters:
 
-- Access the Live Production Demo: `https://your-demo-link-here.com`
+- Access the Live Deployment: [Sekyu Demo](https://bonn13.pythonanywhere.com/)
 - Registration required: You can use fake credentials as the app only needs a unique username to create an isolated vault.
-- 24-hour Data Purge: You are welcome to test all features, but please note that all database entries are automatically deleted every 24 hours. Do not store actual production passwords here!
+- 24-hour Data Purge: You are welcome to test all features, but please note that all database entries are automatically deleted every 24 hours at exactly 12:00 UTC. **Do not** store actual production passwords here!
 - Host It Yourself: This project is fully open-source and production-ready. If you find this architecture promising and want permanent storage, I highly encourage you to clone the repository and host it locally or on your own server.
 
 ---
