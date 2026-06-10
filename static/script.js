@@ -798,6 +798,7 @@ async function submitUpdateForm(btn, id) {
         encryptedHex = await encryptVaultPassword(passwordInput, activeDEK);
 
         if (passwordField) passwordField.value = "";
+        if (usernameField) usernameField.value = "";
         passwordInput = "";
 
         requestBody.new_ciphertext = encryptedHex;
@@ -908,7 +909,7 @@ if (loginBtn) {
         const passwordField = document.getElementById('loginPassword');
         if (!usernameField || !passwordField) return;
 
-        const username = usernameField.value || "";
+        let username = usernameField.value || "";
         let password = passwordField.value || "";
         if (!username.trim() || !password.trim()) {
             loginError.textContent = "Please fill out all fields.";
@@ -942,8 +943,12 @@ if (loginBtn) {
             }
 
             if (passwordField) passwordField.value = "";
+            if (usernameField) usernameField.value = "";
 
-            const { hashHex, kek } = await deriveKeysAndTokens(password, payload.salt);
+            let keyData = await deriveKeysAndTokens(password, payload.salt);
+            let kek = keyData.kek;
+            let hashHex = keyData.hashHex;
+
             password = null;
             
             let activeDEK;
@@ -954,6 +959,11 @@ if (loginBtn) {
                 return;
             }
 
+            kek = null;
+            keyData.kek = null;
+            keyData.hashHex = null; 
+            keyData = null;
+
             res = await fetch(loginUrl, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -962,7 +972,9 @@ if (loginBtn) {
                     session_hash: hashHex 
                 })
             });
-            
+
+            hashHex = null;
+                        
             payload = await res.json();
 
             if (res.ok) {
@@ -1042,11 +1054,10 @@ if (registerBtn) {
             return;
         }
 
-        let registrationSuccessful = false;
-
         try {
             registerBtn.disabled = true;
 
+            if (usernameField) usernameField.value = "";
             if (passwordField) passwordField.value = "";
             if (confField) confField.value = "";
 
@@ -1085,7 +1096,6 @@ if (registerBtn) {
             saltHex = null;
 
             if (res.ok) {
-                registrationSuccessful = true;
 
                 startSessionCountdown(15);
                 cryptoSession.setSession(secureDEK);
@@ -1108,7 +1118,6 @@ if (registerBtn) {
                         // fallback if response body is empty
                     }
                     if (registerError) registerError.textContent = fetchErrorMsg;
-                    registrationSuccessful = false;
                     return;
                 }
             } else {
@@ -1229,6 +1238,7 @@ if (createVaultBtn) {
 
             ciphertext = await encryptVaultPassword(password, dek);
             if (passwordField) passwordField.value = "";
+            if (usernameField) usernameField.value = "";
             password = "";
 
             requestBody = {
@@ -1271,6 +1281,7 @@ if (createVaultBtn) {
                 clone.querySelector('.entry-website').textContent = entry.website;
                 clone.querySelector('.entry-username').textContent = entry.username;
                 clone.querySelector('.entry-website-title-span').textContent = entry.website;
+                clone.querySelector('.field-username').value = entry.username;
                 clone.querySelector('.entry-password-display').setAttribute('data-ciphertext', entry.ciphertext);
 
                 clone.querySelector('.btn-delete-action')?.setAttribute('data-entry-id', entry.id);
@@ -1485,8 +1496,6 @@ if (updateNewPwBtn) {
             return;
         }
 
-        let patchSuccessful = false;
-
         try {
             updateNewPwBtn.disabled = true;
 
@@ -1544,7 +1553,6 @@ if (updateNewPwBtn) {
                 newPasswordInput?.focus();
                 return;
             }
-            patchSuccessful = true;
             patchForm.reset();
             if (patchError) patchError.textContent = "";
 
