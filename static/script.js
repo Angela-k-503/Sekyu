@@ -162,7 +162,6 @@ async function secureFetch(url, options = {}) {
 
     const response = await fetch(url, {
         ...options,
-        credentials: 'include',
         headers
     });
 
